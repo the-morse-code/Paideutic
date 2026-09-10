@@ -1,0 +1,140 @@
+[
+  {
+    "user_id": "6d1e715a-ab30-43db-ab3c-7b62966b548e",
+    "author_name": "Morse",
+    "title": "democracy civics chapter 1",
+    "content": "### democracy civics chapter 1.pdf",
+    "subject": "History",
+    "flashcards": [],
+    "attachments": [
+      {
+        "id": "att_1788976493467_2fkcu",
+        "name": "democracy civics chapter 1.pdf",
+        "size": 291673,
+        "type": "application/pdf",
+        "dataUrl": "https://gomekylzuztihoxzjbbm.supabase.co/storage/v1/object/public/Material%20Library/Uploaded%20Material/1788976492549__by__Morse__uid__6d1e715a-ab30-43db-ab3c-7b62966b548e__democracy_civics_chapter_1.pdf",
+        "storageType": "supabase",
+        "storageUrl": "https://gomekylzuztihoxzjbbm.supabase.co/storage/v1/object/public/Material%20Library/Uploaded%20Material/1788976492549__by__Morse__uid__6d1e715a-ab30-43db-ab3c-7b62966b548e__democracy_civics_chapter_1.pdf",
+        "supabasePath": "Uploaded Material/1788976492549__by__Morse__uid__6d1e715a-ab30-43db-ab3c-7b62966b548e__democracy_civics_chapter_1.pdf"
+      }
+    ],
+    "id": "note_1788976501470_t4x3",
+    "upvotes": 1,
+    "views": 1,
+    "has_upvoted": true,
+    "created_at": "2026-09-09T17:55:01.470Z",
+    "upvoted_by": [
+      "6d1e715a-ab30-43db-ab3c-7b62966b548e"
+    ]
+  },
+  {
+    "user_id": "6d1e715a-ab30-43db-ab3c-7b62966b548e",
+    "author_name": "Morse",
+    "title": "Pranav Biswal",
+    "content": "Pranav",
+    "subject": "Biology",
+    "flashcards": [],
+    "attachments": [
+      {
+        "id": "att_1788976286047_b9wr3",
+        "name": "hoto Pranav Biswal.jpeg",
+        "size": 100457,
+        "type": "image/jpeg",
+        "dataUrl": "https://gomekylzuztihoxzjbbm.supabase.co/storage/v1/object/public/Material%20Library/Uploaded%20Material/1788976285340__by__Morse__uid__6d1e715a-ab30-43db-ab3c-7b62966b548e__hoto_Pranav_Biswal.jpeg",
+        "storageType": "supabase",
+        "storageUrl": "https://gomekylzuztihoxzjbbm.supabase.co/storage/v1/object/public/Material%20Library/Uploaded%20Material/1788976285340__by__Morse__uid__6d1e715a-ab30-43db-ab3c-7b62966b548e__hoto_Pranav_Biswal.jpeg",
+        "supabasePath": "Uploaded Material/1788976285340__by__Morse__uid__6d1e715a-ab30-43db-ab3c-7b62966b548e__hoto_Pranav_Biswal.jpeg"
+      }
+    ],
+    "id": "note_1788976298807_y8px",
+    "upvotes": 1,
+    "views": 1,
+    "has_upvoted": true,
+    "created_at": "2026-09-09T17:51:38.808Z",
+    "upvoted_by": [
+      "6d1e715a-ab30-43db-ab3c-7b62966b548e"
+    ]
+  },
+  {
+    "user_id": "6d1e715a-ab30-43db-ab3c-7b62966b548e",
+    "author_name": "Morse",
+    "title": "Pranav Biswal",
+    "content": "Pranav",
+    "subject": "Biology",
+    "flashcards": [],
+    "attachments": [
+      {
+        "id": "att_1788975095617_5qejs",
+        "name": "hoto Pranav Biswal.jpeg",
+        "size": 100457,
+        "type": "image/jpeg",
+        "dataUrl": "https://gomekylzuztihoxzjbbm.supabase.co/storage/v1/object/public/Material%20Library/Uploaded%20Material/1788975094784__by__Morse__uid__6d1e715a-ab30-43db-ab3c-7b62966b548e__hoto_Pranav_Biswal.jpeg",
+        "storageType": "supabase",
+        "storageUrl": "https://gomekylzuztihoxzjbbm.supabase.co/storage/v1/object/public/Material%20Library/Uploaded%20Material/1788975094784__by__Morse__uid__6d1e715a-ab30-43db-ab3c-7b62966b548e__hoto_Pranav_Biswal.jpeg",
+        "supabasePath": "Uploaded Material/1788975094784__by__Morse__uid__6d1e715a-ab30-43db-ab3c-7b62966b548e__hoto_Pranav_Biswal.jpeg"
+      }
+    ],
+    "id": "note_1788975107484_ohfm",
+    "upvotes": 1,
+    "views": 1,
+    "has_upvoted": true,
+    "created_at": "2026-09-09T17:31:47.484Z",
+    "upvoted_by": [
+      "6d1e715a-ab30-43db-ab3c-7b62966b548e"
+    ]
+  },
+  {
+    "user_id": "6d1e715a-ab30-43db-ab3c-7b62966b548e",
+    "author_name": "Morse",
+    "title": "Pranav Biswal",
+    "content": "Pranav",
+    "subject": "Biology",
+    "flashcards": [],
+    "attachments": [
+      {
+        "id": "att_1788974890256_dzg3q",
+        "name": "hoto Pranav Biswal.jpeg",
+        "size": 100457,
+        "type": "image/jpeg",
+        "dataUrl": "/api/uploads/1788974890478__by__Morse__uid__6d1e715a-ab30-43db-ab3c-7b62966b548e__hoto_Pranav_Biswal.jpeg",
+        "storageType": "server",
+        "storageUrl": "/api/uploads/1788974890478__by__Morse__uid__6d1e715a-ab30-43db-ab3c-7b62966b548e__hoto_Pranav_Biswal.jpeg"
+      }
+    ],
+    "id": "note_1788974912811_1cb7",
+    "upvotes": 1,
+    "views": 1,
+    "has_upvoted": true,
+    "created_at": "2026-09-09T17:28:32.811Z",
+    "upvoted_by": [
+      "6d1e715a-ab30-43db-ab3c-7b62966b548e"
+    ]
+  },
+  {
+    "id": "sup_mat_1788962117142__by__Pranav_Biswal__uid__2c13bbdb-efc0-412d-85da-5a5fe482eb7a__UNGA_DISEC_BG_KT_MUN_2026_pdf",
+    "user_id": "2c13bbdb-efc0-412d-85da-5a5fe482eb7a",
+    "author_name": "Pranav Biswal",
+    "title": "UNGA_DISEC_BG_KT_MUN_2026",
+    "subject": "Computer Science",
+    "content": "### UNGA_DISEC_BG_KT_MUN_2026.pdf\n\nShared study resource uploaded to the community library by Pranav Biswal.\n\n- **File Name**: `UNGA_DISEC_BG_KT_MUN_2026.pdf`\n- **Format**: PDF Document\n- **Storage**: Supabase Material Library",
+    "upvotes": 2,
+    "views": 8,
+    "has_upvoted": false,
+    "upvoted_by": [
+      "6d1e715a-ab30-43db-ab3c-7b62966b548e"
+    ],
+    "created_at": "2026-09-09T13:55:18.335Z",
+    "attachments": [
+      {
+        "id": "att_sup_1788962117142__by__Pranav_Biswal__uid__2c13bbdb-efc0-412d-85da-5a5fe482eb7a__UNGA_DISEC_BG_KT_MUN_2026_pdf",
+        "name": "UNGA_DISEC_BG_KT_MUN_2026.pdf",
+        "size": 674365,
+        "type": "application/pdf",
+        "dataUrl": "https://gomekylzuztihoxzjbbm.supabase.co/storage/v1/object/public/Material%20Library/Uploaded%20Material/1788962117142__by__Pranav%20Biswal__uid__2c13bbdb-efc0-412d-85da-5a5fe482eb7a__UNGA_DISEC_BG_KT_MUN_2026.pdf",
+        "storageType": "supabase",
+        "storageUrl": "https://gomekylzuztihoxzjbbm.supabase.co/storage/v1/object/public/Material%20Library/Uploaded%20Material/1788962117142__by__Pranav%20Biswal__uid__2c13bbdb-efc0-412d-85da-5a5fe482eb7a__UNGA_DISEC_BG_KT_MUN_2026.pdf",
+        "supabasePath": "Uploaded Material/1788962117142__by__Pranav Biswal__uid__2c13bbdb-efc0-412d-85da-5a5fe482eb7a__UNGA_DISEC_BG_KT_MUN_2026.pdf"
+      }
+    ]
+  }
+]

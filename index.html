@@ -1,0 +1,36 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Paideutic — Student Productivity & Adaptive AI Study Platform</title>
+    <meta name="description" content="All-in-one student productivity, peer note-sharing, and zero-cost adaptive AI study platform with Pomodoro focus engine, smart to-do, and weak-point summarizer." />
+    <meta property="og:title" content="Paideutic — Student Productivity & Adaptive AI Study Platform" />
+    <meta property="og:description" content="All-in-one student productivity, peer note-sharing, and zero-cost adaptive AI study platform with Pomodoro focus engine, smart to-do, and weak-point summarizer." />
+    <meta property="og:type" content="website" />
+    <meta name="twitter:card" content="summary_large_image" />
+    <script>
+      (function() {
+        if (window.opener && (window.location.hash || window.location.search)) {
+          try {
+            window.opener.postMessage({
+              type: 'PAIDEUTIC_AUTH_CALLBACK',
+              hash: window.location.hash,
+              search: window.location.search,
+            }, '*');
+            setTimeout(function() {
+              window.close();
+            }, 300);
+          } catch (e) {
+            console.error('OAuth popup message failed', e);
+          }
+        }
+      })();
+    </script>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>
+

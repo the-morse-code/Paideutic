@@ -1,0 +1,6 @@
+{
+  "name": "Paideutic",
+  "description": "All-in-one student productivity, peer note-sharing, and zero-cost adaptive AI study platform with Pomodoro focus engine, smart to-do, and weak-point summarizer.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
