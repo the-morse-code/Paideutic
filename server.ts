@@ -50,7 +50,7 @@ function getGeminiAI(): GoogleGenAI | null {
 }
 
 // Generate content with resilient fallback across supported Gemini models
-// Primary: gemini-3.8-flash; Fast backups: gemini-flash-latest, gemini-3.1-flash-lite, gemini-3.1-pro-preview
+// Primary: gemini-3.8-flash; Fast backups: gemini-3.1-flash-lite, gemini-flash-latest
 async function generateWithFallback(
   ai: GoogleGenAI,
   params: {
@@ -60,47 +60,34 @@ async function generateWithFallback(
 ) {
   const models = [
     "gemini-3.8-flash",
-    "gemini-flash-latest",
     "gemini-3.1-flash-lite",
-    "gemini-3.1-pro-preview",
+    "gemini-flash-latest",
   ];
   let lastError: any = null;
 
   for (const model of models) {
-    // Retry up to 2 attempts per model ONLY if transient high demand spike (503)
-    for (let attempt = 1; attempt <= 2; attempt++) {
-      try {
-        const response = await ai.models.generateContent({
-          model,
-          contents: params.contents,
-          config: params.config,
-        });
-        return response;
-      } catch (err: any) {
-        lastError = err;
-        const errMsg = err?.message || String(err);
-        const isQuotaExhausted =
-          errMsg.includes("RESOURCE_EXHAUSTED") ||
-          errMsg.includes("quota") ||
-          errMsg.includes("limit:") ||
-          err?.status === 429;
-        const isHighDemand =
-          err?.status === 503 ||
-          errMsg.includes("503") ||
-          errMsg.includes("high demand") ||
-          errMsg.includes("UNAVAILABLE");
+    try {
+      const response = await ai.models.generateContent({
+        model,
+        contents: params.contents,
+        config: params.config,
+      });
+      return response;
+    } catch (err: any) {
+      lastError = err;
+      const errMsg = err?.message || String(err);
+      const isHighDemand =
+        err?.status === 503 ||
+        errMsg.includes("503") ||
+        errMsg.includes("high demand") ||
+        errMsg.includes("UNAVAILABLE");
 
-        // If it's a transient 503 high demand spike, brief pause and try once more on same model
-        if (isHighDemand && attempt === 1) {
-          await new Promise((resolve) => setTimeout(resolve, 650));
-          continue;
-        }
-
-        console.warn(
-          `Model ${model} ${isQuotaExhausted ? "(Quota reached)" : `(attempt ${attempt})`}: ${errMsg}. Moving to next fallback model...`
-        );
-        break; // Break out of attempts and move to next model immediately
+      if (isHighDemand) {
+        // Quick retry on the next available model
+        await new Promise((resolve) => setTimeout(resolve, 300 + Math.random() * 200));
       }
+      // Silently try next model in fallback list
+      continue;
     }
   }
 
