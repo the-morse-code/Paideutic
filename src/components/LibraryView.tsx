@@ -19,8 +19,7 @@ import {
   Lock,
   UserCheck,
   Trash2,
-  Edit3,
-  Check
+  Edit3
 } from 'lucide-react';
 import ReactMarkdown from 'react-markdown';
 import { SharedNote, Subject, Flashcard, AttachedFile } from '../types';
@@ -121,22 +120,8 @@ export const LibraryView: React.FC<LibraryViewProps> = ({
   const [pubFlashcards, setPubFlashcards] = useState<Array<{ front: string; back: string }>>([]);
   const [isExtractingCards, setIsExtractingCards] = useState(false);
   const [pubAttachments, setPubAttachments] = useState<AttachedFile[]>([]);
-  const [stagedFiles, setStagedFiles] = useState<File[]>([]);
   const [isUploadingAttachment, setIsUploadingAttachment] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
-
-  // Track notes uploaded in this session/browser for robust author permissions
-  const [myUploadedIds, setMyUploadedIds] = useState<Set<string>>(() =>
-    StorageService.getMyUploadedNoteIds()
-  );
-
-  useEffect(() => {
-    const handleSyncUploaded = () => {
-      setMyUploadedIds(StorageService.getMyUploadedNoteIds());
-    };
-    window.addEventListener('paideutic_notes_updated', handleSyncUploaded);
-    return () => window.removeEventListener('paideutic_notes_updated', handleSyncUploaded);
-  }, []);
 
   const handleManualSync = async () => {
     setIsSyncing(true);
@@ -151,25 +136,17 @@ export const LibraryView: React.FC<LibraryViewProps> = ({
     }
   };
 
-  // Keep active note modal updated if notes state changes, without view regression
+  // Keep active note modal updated if notes state changes
   useEffect(() => {
     if (activeNoteModal) {
       const fresh = notes.find((n) => n.id === activeNoteModal.id);
       if (fresh) {
-        setActiveNoteModal((prev) =>
-          prev
-            ? {
-                ...fresh,
-                views: Math.max(prev.views || 0, fresh.views || 0),
-                upvotes: Math.max(prev.upvotes || 0, fresh.upvotes || 0),
-              }
-            : null
-        );
+        setActiveNoteModal(fresh);
       }
     }
   }, [notes]);
 
-  const handleOpenPublish = (defaultFiles?: File[]) => {
+  const handleOpenPublish = () => {
     if (isGuest) {
       setAuthRequiredReason('upload');
       return;
@@ -180,29 +157,97 @@ export const LibraryView: React.FC<LibraryViewProps> = ({
     setPubContent('');
     setPubFlashcards([]);
     setPubAttachments([]);
-    setStagedFiles(defaultFiles || []);
     setIsPublishModalOpen(true);
   };
 
   const handleOpenEdit = (note: SharedNote, e?: React.MouseEvent) => {
-    if (e) {
-      e.preventDefault();
-      e.stopPropagation();
+    if (e) e.stopPropagation();
+    if (isGuest) {
+      setAuthRequiredReason('upload');
+      return;
     }
-    // Dismiss reader modal so edit dialog is displayed directly in front
-    setActiveNoteModal(null);
     setEditingNoteId(note.id);
     setPubTitle(note.title);
     setPubSubject(note.subject);
     setPubContent(note.content);
     setPubFlashcards((note.flashcards || []).map((fc) => ({ front: fc.front, back: fc.back })));
     setPubAttachments(note.attachments || []);
-    setStagedFiles([]);
     setIsPublishModalOpen(true);
   };
 
-  // Stage files selected inside the dialog box (DO NOT upload immediately; let user edit details first!)
-  const handleStageFiles = (e: React.ChangeEvent<HTMLInputElement>) => {
+  // Direct upload of any study material file directly to the library
+  const handleDirectFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    if (isGuest) {
+      setAuthRequiredReason('upload');
+      if (e.target) e.target.value = '';
+      return;
+    }
+    setIsUploadingDirect(true);
+    setDirectUploadMessage(`Uploading "${file.name}" to database...`);
+    try {
+      const res = await uploadMaterialToBucket(file, authorName, userId);
+      const isPdf = file.name.toLowerCase().endsWith('.pdf');
+      const isImg = /\.(png|jpe?g|webp|gif|svg)$/i.test(file.name);
+      const cleanTitle = file.name.replace(/\.[^/.]+$/, '').replace(/[^a-zA-Z0-9 _-]/g, ' ').trim();
+      const detectedSubject: Subject = isPdf ? 'Computer Science' : isImg ? 'Mathematics' : 'Biology';
+
+      const newAttachment: AttachedFile = {
+        id: `att_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`,
+        name: file.name,
+        size: file.size,
+        type: file.type || 'application/octet-stream',
+        dataUrl: res.publicUrl || res.dataUrl,
+        storageType: res.storageType,
+        storageUrl: res.publicUrl,
+        supabasePath: res.supabasePath,
+      };
+
+      const payload = {
+        user_id: userId || 'community_user',
+        author_name: authorName || 'Scholar',
+        title: cleanTitle || file.name,
+        content: `### ${file.name}\n\nStudy material uploaded to the shared library by ${authorName || 'Scholar'}.\n\n- **File Name**: \`${file.name}\`\n- **File Size**: ${(file.size / 1024).toFixed(1)} KB\n- **Format**: ${isPdf ? 'PDF Document' : isImg ? 'Image / Diagram Asset' : 'Study Resource'}\n- **Storage**: Supabase Material Library & Central Server`,
+        subject: detectedSubject,
+        flashcards: [],
+        attachments: [newAttachment],
+      };
+
+      // Appended only once via onPublishNote
+      const published = await onPublishNote(payload);
+      if (published) {
+        setLocalNotes((prev) => {
+          const exists = prev.some((n) => n.id === published.id);
+          if (exists) return prev.map((n) => (n.id === published.id ? published : n));
+          return [published, ...prev];
+        });
+      }
+      setSelectedSubject('All');
+
+      if (res.storageType === 'supabase') {
+        setDirectUploadMessage(`"${file.name}" uploaded directly to Supabase Material Library bucket!`);
+      } else if (res.isRlsBlocked) {
+        setDirectUploadMessage(`"${file.name}" uploaded to library! (Saved to Server Storage. To store in Supabase Bucket, run the Supabase Storage SQL script.)`);
+      } else {
+        setDirectUploadMessage(`"${file.name}" successfully uploaded and saved to database!`);
+      }
+      setTimeout(() => setDirectUploadMessage(null), 6000);
+      if (onSyncNotes) {
+        await onSyncNotes();
+      }
+    } catch (err: any) {
+      console.error('Direct file upload failed:', err);
+      setDirectUploadMessage(`Upload failed: ${err.message || 'Error uploading file'}`);
+      setTimeout(() => setDirectUploadMessage(null), 5000);
+    } finally {
+      setIsUploadingDirect(false);
+      if (e.target) e.target.value = '';
+    }
+  };
+
+  // Upload file inside the Publish Note Modal
+  const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const files = e.target.files;
     if (!files || files.length === 0) return;
     if (isGuest) {
@@ -210,47 +255,36 @@ export const LibraryView: React.FC<LibraryViewProps> = ({
       if (e.target) e.target.value = '';
       return;
     }
-
+    setIsUploadingAttachment(true);
     const fileList = Array.from(files);
-    const validFiles: File[] = [];
-
-    for (const file of fileList) {
+    for (let i = 0; i < fileList.length; i++) {
+      const file = fileList[i];
       if (file.size > 25 * 1024 * 1024) {
         alert(`File "${file.name}" exceeds the 25MB limit.`);
         continue;
       }
-      validFiles.push(file);
+      try {
+        const res = await uploadMaterialToBucket(file, authorName, userId);
+        const newAttachment: AttachedFile = {
+          id: `att_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`,
+          name: res.name,
+          size: res.size,
+          type: res.type,
+          dataUrl: res.publicUrl || res.dataUrl,
+          storageType: res.storageType,
+          storageUrl: res.publicUrl,
+          supabasePath: res.supabasePath,
+        };
+        setPubAttachments((prev) => [...prev, newAttachment]);
+        // Auto prefill title and content if blank
+        setPubTitle((prev) => prev.trim() ? prev : file.name.replace(/\.[^/.]+$/, '').replace(/[^a-zA-Z0-9 _-]/g, ' ').trim());
+        setPubContent((prev) => prev.trim() ? prev : `### ${file.name}\n\nStudy material uploaded to the shared library by ${authorName || 'Scholar'}.\n\n- **File Name**: \`${file.name}\`\n- **File Size**: ${(file.size / 1024).toFixed(1)} KB`);
+      } catch (err) {
+        console.warn('Upload error:', err);
+      }
     }
-
-    if (validFiles.length > 0) {
-      const first = validFiles[0];
-      const cleanName = first.name
-        .replace(/\.[^/.]+$/, '')
-        .replace(/[_\-]+/g, ' ')
-        .trim();
-
-      // Automatically prefill note Title if user hasn't typed one yet
-      setPubTitle((prev) => (prev.trim() ? prev : cleanName));
-
-      // Automatically prefill note Content if user hasn't typed one yet
-      setPubContent((prev) =>
-        prev.trim()
-          ? prev
-          : `### ${first.name}\n\nStudy material uploaded to the shared library by ${
-              authorName || 'Scholar'
-            }.\n\n- **File Name**: \`${first.name}\`\n- **File Size**: ${(
-              first.size / (1024 * 1024)
-            ).toFixed(2)} MB\n- **Uploaded By**: ${authorName || 'Scholar'}`
-      );
-
-      setStagedFiles((prev) => [...prev, ...validFiles]);
-    }
-
+    setIsUploadingAttachment(false);
     if (e.target) e.target.value = '';
-  };
-
-  const handleRemoveStagedFile = (index: number) => {
-    setStagedFiles((prev) => prev.filter((_, i) => i !== index));
   };
 
   const handleRemoveAttachment = (id: string) => {
@@ -269,61 +303,29 @@ export const LibraryView: React.FC<LibraryViewProps> = ({
       return;
     }
     const hasAttachments = pubAttachments && pubAttachments.length > 0;
-    const hasStaged = stagedFiles && stagedFiles.length > 0;
-    const defaultName = hasStaged ? stagedFiles[0].name.replace(/\.[^/.]+$/, '') : hasAttachments ? pubAttachments[0].name.replace(/\.[^/.]+$/, '') : '';
-    const finalTitle = pubTitle.trim() || defaultName;
-    const finalContent = pubContent.trim() || (defaultName ? `Study resource and materials for ${defaultName} shared by ${authorName || 'Scholar'}.` : '');
+    const finalTitle = pubTitle.trim() || (hasAttachments ? pubAttachments[0].name.replace(/\.[^/.]+$/, '') : '');
+    const finalContent = pubContent.trim() || (hasAttachments ? `Study resource and materials attached by ${authorName || 'Scholar'}.` : '');
 
-    if (!finalTitle) return;
+    if (!finalTitle || !finalContent) return;
 
     setIsSubmitting(true);
     try {
-      // 1. Upload staged files now that the user has reviewed & submitted
-      const uploadedAttachments: AttachedFile[] = [];
-      if (stagedFiles.length > 0) {
-        setIsUploadingAttachment(true);
-        for (const file of stagedFiles) {
-          try {
-            const res = await uploadMaterialToBucket(file, authorName, userId);
-            uploadedAttachments.push({
-              id: `att_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`,
-              name: res.name,
-              size: res.size,
-              type: res.type,
-              dataUrl: res.publicUrl || res.dataUrl,
-              storageType: res.storageType,
-              storageUrl: res.publicUrl,
-              supabasePath: res.supabasePath,
-            });
-          } catch (uploadErr) {
-            console.error('Error uploading staged file:', uploadErr);
-          }
-        }
-        setIsUploadingAttachment(false);
-      }
-
-      const allAttachments = [...pubAttachments, ...uploadedAttachments];
-
       if (editingNoteId) {
         // IN-PLACE EDIT: Update exact object in backend by matching note.id
         const updated = await StorageService.updateNote(editingNoteId, {
           title: finalTitle,
-          content: finalContent || 'Updated study materials.',
+          content: finalContent,
           subject: pubSubject,
           flashcards: pubFlashcards.map((fc, i) => ({ id: `fc_${Date.now()}_${i}`, ...fc })),
-          attachments: allAttachments,
+          attachments: pubAttachments,
         });
 
         if (updated) {
-          StorageService.recordMyUploadedNoteId(updated.id);
-          setMyUploadedIds(StorageService.getMyUploadedNoteIds());
           // Immediately update local React state so UI reflects changes instantly
           setLocalNotes((prev) => prev.map((n) => (n.id === updated.id ? updated : n)));
           if (activeNoteModal && activeNoteModal.id === editingNoteId) {
             setActiveNoteModal(updated);
           }
-          setDirectUploadMessage(`Changes saved successfully for "${updated.title}"!`);
-          setTimeout(() => setDirectUploadMessage(null), 5000);
         }
       } else {
         // NEW NOTE: Append via onPublishNote and update local state cleanly
@@ -331,23 +333,19 @@ export const LibraryView: React.FC<LibraryViewProps> = ({
           user_id: userId || 'community_user',
           author_name: authorName || 'Scholar',
           title: finalTitle,
-          content: finalContent || 'Shared study note.',
+          content: finalContent,
           subject: pubSubject,
           flashcards: pubFlashcards.map((fc, i) => ({ id: `fc_${Date.now()}_${i}`, ...fc })),
-          attachments: allAttachments,
+          attachments: pubAttachments,
         };
 
         const published = await onPublishNote(payload);
         if (published) {
-          StorageService.recordMyUploadedNoteId(published.id);
-          setMyUploadedIds(StorageService.getMyUploadedNoteIds());
           setLocalNotes((prev) => {
             const exists = prev.some((n) => n.id === published.id);
             if (exists) return prev.map((n) => (n.id === published.id ? published : n));
             return [published, ...prev];
           });
-          setDirectUploadMessage(`"${published.title}" successfully published to the library!`);
-          setTimeout(() => setDirectUploadMessage(null), 5000);
         }
       }
 
@@ -357,16 +355,12 @@ export const LibraryView: React.FC<LibraryViewProps> = ({
       setPubContent('');
       setPubFlashcards([]);
       setPubAttachments([]);
-      setStagedFiles([]);
       setIsPublishModalOpen(false);
       if (onSyncNotes) await onSyncNotes();
     } catch (err) {
       console.error('Save material error:', err);
-      setDirectUploadMessage('Failed to save material details. Please try again.');
-      setTimeout(() => setDirectUploadMessage(null), 5000);
     } finally {
       setIsSubmitting(false);
-      setIsUploadingAttachment(false);
     }
   };
 
@@ -397,6 +391,27 @@ export const LibraryView: React.FC<LibraryViewProps> = ({
     return true;
   });
 
+  const handleToggleUpvoteDirect = (noteId: string) => {
+    setLocalNotes((prev) =>
+      prev.map((n) => {
+        if (n.id === noteId || decodeURIComponent(n.id) === decodeURIComponent(noteId)) {
+          const willBeUpvoted = !n.has_upvoted;
+          const newUpvotes = willBeUpvoted ? (n.upvotes || 0) + 1 : Math.max(0, (n.upvotes || 1) - 1);
+          return { ...n, has_upvoted: willBeUpvoted, upvotes: newUpvotes };
+        }
+        return n;
+      })
+    );
+
+    if (activeNoteModal && (activeNoteModal.id === noteId || decodeURIComponent(activeNoteModal.id) === decodeURIComponent(noteId))) {
+      const willBeUpvoted = !activeNoteModal.has_upvoted;
+      const newUpvotes = willBeUpvoted ? (activeNoteModal.upvotes || 0) + 1 : Math.max(0, (activeNoteModal.upvotes || 1) - 1);
+      setActiveNoteModal({ ...activeNoteModal, has_upvoted: willBeUpvoted, upvotes: newUpvotes });
+    }
+
+    onToggleUpvote(noteId);
+  };
+
   const handleOpenNote = (note: SharedNote) => {
     if (isGuest) {
       const isAlreadyUnlocked = guestViewedIds.includes(note.id);
@@ -413,8 +428,16 @@ export const LibraryView: React.FC<LibraryViewProps> = ({
         } catch {}
       }
     }
+    const nextViews = (note.views || 0) + 1;
+    setLocalNotes((prev) =>
+      prev.map((n) =>
+        n.id === note.id || decodeURIComponent(n.id) === decodeURIComponent(note.id)
+          ? { ...n, views: nextViews }
+          : n
+      )
+    );
+    setActiveNoteModal({ ...note, views: nextViews });
     onViewNote(note.id);
-    setActiveNoteModal({ ...note, views: (note.views || 0) + 1 });
     setReaderMode('content');
     setCurrentFlashcardIndex(0);
     setIsCardFlipped(false);
@@ -428,21 +451,23 @@ export const LibraryView: React.FC<LibraryViewProps> = ({
     }
   };
 
-  const canDeleteNote = (note: SharedNote | null | undefined): boolean => {
-    if (!note) return false;
-    // 1. Any note uploaded or edited in this browser
-    if (myUploadedIds.has(note.id)) return true;
-
-    // 2. Matching user ID
+  const canDeleteNote = (note: SharedNote): boolean => {
+    if (isGuest) return false;
     const currentUid = (userId || '').trim();
-    const noteUid = (note.user_id || '').trim();
-    if (currentUid && noteUid && currentUid === noteUid) return true;
-
-    // 3. Matching author name
     const currentAuthor = (authorName || '').trim().toLowerCase();
+    const noteUid = (note.user_id || '').trim();
     const noteAuthor = (note.author_name || '').trim().toLowerCase();
-    if (currentAuthor && noteAuthor && currentAuthor === noteAuthor) return true;
 
+    // The user should ONLY be able to see the delete button on the material shared by THEM ONLY
+    if (currentUid && noteUid && currentUid === noteUid) return true;
+    if (
+      currentAuthor &&
+      noteAuthor &&
+      currentAuthor === noteAuthor &&
+      !['scholar', 'community scholar', 'peer contributor', 'community_user', 'user', 'guest', 'guest scholar'].includes(currentAuthor)
+    ) {
+      return true;
+    }
     return false;
   };
 
@@ -503,28 +528,12 @@ export const LibraryView: React.FC<LibraryViewProps> = ({
             <span>{isSyncing ? 'Syncing...' : 'Sync'}</span>
           </button>
           <button
-            onClick={() => {
-              if (isGuest) {
-                setAuthRequiredReason('upload');
-                return;
-              }
-              handleOpenPublish();
-              setTimeout(() => fileInputRef.current?.click(), 120);
-            }}
-            id="upload-material-btn"
-            className="flex items-center gap-2 px-4 py-2 rounded-xl text-xs font-bold text-indigo-700 dark:text-indigo-200 bg-indigo-50 dark:bg-indigo-950/60 hover:bg-indigo-100 dark:hover:bg-indigo-900/80 border border-indigo-200 dark:border-indigo-800 transition shadow-xs cursor-pointer"
-            title="Upload lecture slides, PDFs, or diagram images"
-          >
-            <Upload className="w-4 h-4 text-indigo-600 dark:text-indigo-400" />
-            <span>Upload Material</span>
-          </button>
-          <button
-            onClick={() => handleOpenPublish()}
+            onClick={handleOpenPublish}
             id="publish-study-note-btn"
             className="flex items-center gap-2 px-4.5 py-2 rounded-xl text-xs font-bold text-white bg-indigo-600 hover:bg-indigo-700 transition shadow-xs cursor-pointer"
           >
             <Plus className="w-4 h-4" />
-            <span>Publish Note</span>
+            <span>Publish Note or Deck</span>
           </button>
         </div>
       </div>
@@ -691,7 +700,7 @@ export const LibraryView: React.FC<LibraryViewProps> = ({
                   <button
                     onClick={(e) => {
                       e.stopPropagation();
-                      onToggleUpvote(note.id);
+                      handleToggleUpvoteDirect(note.id);
                     }}
                     className={`flex items-center gap-1.5 px-2.5 py-1 rounded-lg transition font-semibold cursor-pointer ${
                       note.has_upvoted
@@ -736,7 +745,7 @@ export const LibraryView: React.FC<LibraryViewProps> = ({
                     <span>{activeNoteModal.views || 0}</span>
                   </span>
                   <button
-                    onClick={() => onToggleUpvote(activeNoteModal.id)}
+                    onClick={() => handleToggleUpvoteDirect(activeNoteModal.id)}
                     className={`flex items-center gap-1.5 px-3 py-1 rounded-xl text-xs font-bold transition border cursor-pointer ${
                       activeNoteModal.has_upvoted
                         ? 'bg-indigo-50 dark:bg-indigo-950/80 text-indigo-600 dark:text-indigo-400 border-indigo-200 dark:border-indigo-800'
@@ -997,29 +1006,23 @@ export const LibraryView: React.FC<LibraryViewProps> = ({
         </div>
       )}
 
-      {/* PUBLISH / EDIT STUDY NOTE MODAL */}
+      {/* PUBLISH STUDY NOTE MODAL */}
       {isPublishModalOpen && (
-        <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-xs z-60 flex items-center justify-center p-4">
+        <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-xs z-50 flex items-center justify-center p-4">
           <div className="bg-white dark:bg-slate-900 rounded-3xl border border-slate-200 dark:border-slate-800 max-w-2xl w-full max-h-[90vh] flex flex-col shadow-2xl p-6 md:p-8 overflow-hidden animate-in fade-in zoom-in-95">
             <div className="flex items-center justify-between pb-4 border-b border-slate-100 dark:border-slate-800">
               <div>
                 <h3 className="text-xl font-bold text-slate-900 dark:text-white">
-                  {editingNoteId ? 'Edit Study Material' : stagedFiles.length > 0 ? 'Upload & Share Material' : 'Publish Study Note'}
+                  {editingNoteId ? 'Edit Study Material' : 'Publish Study Note'}
                 </h3>
                 <p className="text-xs text-slate-500 dark:text-slate-400">
                   {editingNoteId
-                    ? 'Update the title, subject, notes, or attachments for this study resource.'
-                    : stagedFiles.length > 0
-                    ? 'Review and edit title and subject before confirming upload.'
-                    : 'Share course notes, lecture slides, formulas, and diagrams.'}
+                    ? 'Update the details, subject, or attachments for this study resource.'
+                    : 'Share course notes, formulas, and diagrams with fellow students.'}
                 </p>
               </div>
               <button
-                onClick={() => {
-                  setIsPublishModalOpen(false);
-                  setStagedFiles([]);
-                  setEditingNoteId(null);
-                }}
+                onClick={() => setIsPublishModalOpen(false)}
                 className="text-slate-400 hover:text-slate-700 dark:hover:text-slate-200 font-bold text-xl cursor-pointer"
               >
                 ✕
@@ -1028,12 +1031,12 @@ export const LibraryView: React.FC<LibraryViewProps> = ({
             <form onSubmit={handlePublishSubmit} className="space-y-4 pt-4 overflow-y-auto flex-1 pr-1">
               <div>
                 <label className="text-xs font-bold text-slate-700 dark:text-slate-300 block mb-1">
-                  Material / Note Title *
+                  Note Title *
                 </label>
                 <input
                   type="text"
                   required
-                  placeholder="e.g. Organic Chemistry Reactions & Mechanisms"
+                  placeholder="e.g. Maxwell's Equations & Boundary Conditions Cheat Sheet"
                   value={pubTitle}
                   onChange={(e) => setPubTitle(e.target.value)}
                   className="w-full px-3.5 py-2 rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-900 dark:text-slate-100 text-sm outline-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500"
@@ -1071,103 +1074,47 @@ export const LibraryView: React.FC<LibraryViewProps> = ({
                   </button>
                 </div>
                 <textarea
-                  rows={4}
+                  rows={5}
                   required
-                  placeholder="# Summary & Key Formulas&#10;- Key Takeaway 1: ...&#10;- Core Principle: ..."
+                  placeholder="# Key Formulas&#10;- Point 1: ...&#10;- Core Theorem: ..."
                   value={pubContent}
                   onChange={(e) => setPubContent(e.target.value)}
                   className="w-full px-3.5 py-2.5 rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-900 dark:text-slate-100 text-xs outline-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500 font-mono resize-none"
                 />
               </div>
-
-              {/* File Selection (PDF, Images) Section */}
+              {/* File Attachments (PDF, Images) Section */}
               <div className="space-y-2 pt-1">
                 <div className="flex items-center justify-between">
                   <label className="text-xs font-bold text-slate-700 dark:text-slate-300 flex items-center gap-1.5">
                     <Paperclip className="w-3.5 h-3.5 text-indigo-600 dark:text-indigo-400" />
-                    <span>Attach Study Files (PDF Lecture Slides, Diagrams, Images)</span>
+                    <span>Attach Supporting Files (PDFs & Images)</span>
                   </label>
                   <span className="text-[10px] text-slate-400 dark:text-slate-500">Max 25MB each</span>
                 </div>
-                {/* File picker drop area */}
+                {/* Upload Trigger Area */}
                 <div
                   onClick={() => fileInputRef.current?.click()}
                   className="p-4 border-2 border-dashed border-slate-200 dark:border-slate-700 hover:border-indigo-400 dark:hover:border-indigo-600 rounded-2xl bg-slate-50/50 dark:bg-slate-800/50 flex flex-col items-center justify-center cursor-pointer transition text-center group"
                 >
-                  <Upload className="w-5 h-5 text-indigo-500 group-hover:scale-110 transition-transform mb-1.5" />
+                  <Upload className={`w-5 h-5 text-indigo-500 group-hover:scale-110 transition-transform mb-1.5 ${isUploadingAttachment ? 'animate-bounce' : ''}`} />
                   <p className="text-xs font-semibold text-slate-700 dark:text-slate-300">
-                    Click to select or drop PDF slides and diagram images
+                    {isUploadingAttachment ? 'Uploading attachment...' : 'Click to browse or drop PDF lecture slides & diagram images'}
                   </p>
                   <p className="text-[10px] text-slate-400 dark:text-slate-500 mt-0.5">
-                    Supports .pdf, .png, .jpg, .jpeg, .webp (Uploads only when you click submit below)
+                    Supports .pdf, .png, .jpg, .jpeg, .webp
                   </p>
                 </div>
                 <input
                   type="file"
                   ref={fileInputRef}
-                  onChange={handleStageFiles}
+                  onChange={handleFileUpload}
                   multiple
                   accept="application/pdf, image/png, image/jpeg, image/webp"
                   className="hidden"
                 />
-
-                {/* Staged Files (Ready to upload on confirmation) */}
-                {stagedFiles.length > 0 && (
-                  <div className="space-y-2 pt-1">
-                    <div className="flex items-center justify-between">
-                      <span className="text-[11px] font-bold text-indigo-700 dark:text-indigo-300 flex items-center gap-1">
-                        <Upload className="w-3.5 h-3.5 text-indigo-600 dark:text-indigo-400" />
-                        <span>Selected for Upload ({stagedFiles.length} file{stagedFiles.length > 1 ? 's' : ''})</span>
-                      </span>
-                      <span className="text-[10px] text-indigo-600 dark:text-indigo-400 font-medium">
-                        Will upload upon confirmation
-                      </span>
-                    </div>
-                    {stagedFiles.map((file, idx) => {
-                      const isPdf = file.name.toLowerCase().endsWith('.pdf');
-                      const sizeMb = (file.size / (1024 * 1024)).toFixed(2);
-                      return (
-                        <div
-                          key={`staged_${idx}`}
-                          className="flex items-center justify-between p-2.5 rounded-xl border border-indigo-200 dark:border-indigo-800/80 bg-indigo-50/60 dark:bg-indigo-950/40 text-xs shadow-2xs"
-                        >
-                          <div className="flex items-center gap-2.5 overflow-hidden">
-                            <div className="w-8 h-8 rounded-lg bg-indigo-100 dark:bg-indigo-900/60 border border-indigo-200 dark:border-indigo-800 flex items-center justify-center shrink-0">
-                              {isPdf ? (
-                                <FileText className="w-4 h-4 text-rose-600 dark:text-rose-400" />
-                              ) : (
-                                <Upload className="w-4 h-4 text-indigo-600 dark:text-indigo-400" />
-                              )}
-                            </div>
-                            <div className="overflow-hidden">
-                              <p className="font-semibold text-slate-800 dark:text-slate-200 truncate max-w-[240px] sm:max-w-xs">
-                                {file.name}
-                              </p>
-                              <span className="text-[10px] text-slate-500 dark:text-slate-400 block">
-                                {isPdf ? 'PDF Document' : 'Image Asset'} • {sizeMb} MB • Ready to upload
-                              </span>
-                            </div>
-                          </div>
-                          <button
-                            type="button"
-                            onClick={() => handleRemoveStagedFile(idx)}
-                            className="p-1.5 rounded-lg text-slate-400 hover:text-rose-600 dark:hover:text-rose-400 hover:bg-rose-50 dark:hover:bg-rose-950/40 transition cursor-pointer"
-                            title="Remove file"
-                          >
-                            <X className="w-4 h-4" />
-                          </button>
-                        </div>
-                      );
-                    })}
-                  </div>
-                )}
-
-                {/* Already Attached Files (Saved) */}
+                {/* Attached Files List */}
                 {pubAttachments.length > 0 && (
                   <div className="space-y-2 pt-1">
-                    <span className="text-[11px] font-bold text-slate-700 dark:text-slate-300 block">
-                      Existing Attached Files ({pubAttachments.length})
-                    </span>
                     {pubAttachments.map((file) => {
                       const isPdf = file.type === 'application/pdf' || file.name.endsWith('.pdf');
                       const sizeKb = Math.round(file.size / 1024);
@@ -1211,7 +1158,6 @@ export const LibraryView: React.FC<LibraryViewProps> = ({
                   </div>
                 )}
               </div>
-
               {/* Flashcards Preview inside form */}
               {pubFlashcards.length > 0 && (
                 <div className="p-3 rounded-xl bg-purple-50 dark:bg-purple-950/40 border border-purple-200 dark:border-purple-800/60 space-y-2">
@@ -1228,43 +1174,22 @@ export const LibraryView: React.FC<LibraryViewProps> = ({
                   </div>
                 </div>
               )}
-
               {/* Form Actions */}
               <div className="pt-3 border-t border-slate-100 dark:border-slate-800 flex items-center justify-end gap-3">
                 <button
                   type="button"
-                  onClick={() => {
-                    setIsPublishModalOpen(false);
-                    setStagedFiles([]);
-                    setEditingNoteId(null);
-                  }}
+                  onClick={() => setIsPublishModalOpen(false)}
                   className="px-4 py-2 rounded-xl border border-slate-200 dark:border-slate-700 text-xs font-semibold text-slate-700 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-800 transition cursor-pointer"
                 >
                   Cancel
                 </button>
                 <button
                   type="submit"
-                  disabled={isSubmitting || isUploadingAttachment}
-                  className="px-5 py-2.5 rounded-xl bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-bold transition shadow-xs cursor-pointer disabled:opacity-50 flex items-center gap-2"
+                  disabled={isSubmitting}
+                  className="px-5 py-2 rounded-xl bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-bold transition shadow-xs cursor-pointer disabled:opacity-50 flex items-center gap-2"
                 >
-                  {isSubmitting || isUploadingAttachment ? (
-                    <RefreshCw className="w-3.5 h-3.5 animate-spin" />
-                  ) : editingNoteId ? (
-                    <Check className="w-3.5 h-3.5" />
-                  ) : stagedFiles.length > 0 ? (
-                    <Upload className="w-3.5 h-3.5" />
-                  ) : (
-                    <Plus className="w-3.5 h-3.5" />
-                  )}
-                  <span>
-                    {isSubmitting || isUploadingAttachment
-                      ? 'Uploading & Saving...'
-                      : editingNoteId
-                      ? 'Save Changes'
-                      : stagedFiles.length > 0
-                      ? 'Upload & Publish Material'
-                      : 'Publish Note'}
-                  </span>
+                  {isSubmitting && <RefreshCw className="w-3.5 h-3.5 animate-spin" />}
+                  <span>{editingNoteId ? 'Save Changes' : 'Publish Note'}</span>
                 </button>
               </div>
             </form>

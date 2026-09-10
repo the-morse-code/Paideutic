@@ -50,7 +50,7 @@ function getGeminiAI(): GoogleGenAI | null {
 }
 
 // Generate content with resilient fallback across supported Gemini models
-// Primary: gemini-3.8-flash; Secondary: gemini-3.1-flash-lite; Tertiary: gemini-flash-latest
+// Primary: gemini-3.8-flash; Fast backups: gemini-flash-latest, gemini-3.1-flash-lite, gemini-3.1-pro-preview
 async function generateWithFallback(
   ai: GoogleGenAI,
   params: {
@@ -60,8 +60,9 @@ async function generateWithFallback(
 ) {
   const models = [
     "gemini-3.8-flash",
-    "gemini-3.1-flash-lite",
     "gemini-flash-latest",
+    "gemini-3.1-flash-lite",
+    "gemini-3.1-pro-preview",
   ];
   let lastError: any = null;
 
@@ -141,39 +142,54 @@ function generateLocalChatFallback(message: string, currentWeakTopics: string[] 
     };
   }
 
-  // Factual & Symbolic Lookups (direct, concise answers)
-  if (queryLower.includes('chlorine')) {
-    return {
-      answer: "The chemical symbol for **Chlorine** is **Cl** (atomic number 17). It is a halogen in Group 17 of the periodic table.",
-      detectedWeakness: null,
-      encouragement: "Mastering chemical symbols and periodic table trends accelerates your science mastery!",
-      suggestedFollowUps: [
-        "What is the electron configuration of Chlorine?",
-        "Why does Chlorine readily form ionic bonds with Sodium to make NaCl?"
-      ]
-    };
+  // 1. Math calculation pattern (e.g., "what is 3 + 2", "3+2", "calculate 15 * 4", "100 / 4")
+  const mathMatch = message.match(/(?:what\s+is\s+|calculate\s+|compute\s+)?(\d+(?:\.\d+)?)\s*([\+\-\*\/x×÷\^])\s*(\d+(?:\.\d+)?)/i);
+  if (mathMatch) {
+    const num1 = parseFloat(mathMatch[1]);
+    const op = mathMatch[2].toLowerCase();
+    const num2 = parseFloat(mathMatch[3]);
+    let result: number | null = null;
+    let opSymbol = op;
+    if (op === '+') { result = num1 + num2; opSymbol = '+'; }
+    else if (op === '-') { result = num1 - num2; opSymbol = '-'; }
+    else if (op === '*' || op === 'x' || op === '×') { result = num1 * num2; opSymbol = '×'; }
+    else if (op === '/' || op === '÷') { result = num2 !== 0 ? num1 / num2 : null; opSymbol = '÷'; }
+    else if (op === '^') { result = Math.pow(num1, num2); opSymbol = '^'; }
+
+    if (result !== null) {
+      const cleanRes = Number.isInteger(result) ? result.toString() : result.toFixed(2);
+      return {
+        answer: `${num1} ${opSymbol} ${num2} = **${cleanRes}**`,
+        detectedWeakness: null,
+        encouragement: "Quick arithmetic down pat! Keep up the momentum.",
+        suggestedFollowUps: [
+          `Can you explain how this applies in algebraic equations?`,
+          `Give me a practice problem using this operation.`
+        ]
+      };
+    }
   }
 
+  // 2. Extract struggle topics directly (e.g., "I'm struggling with X", "I don't understand X", "help me with X")
+  const struggleMatch = message.match(/(?:struggling with|confused about|help (?:me )?with|trouble with|understand)\s+([A-Za-z0-9\s-]{3,35})/i);
+  let extractedTopic: string | null = null;
+  if (struggleMatch && struggleMatch[1]) {
+    const rawMatch = struggleMatch[1].trim().replace(/[?.!,]+$/, '');
+    const isQuestionWord = /^(what|how|why|can|could|tell|explain|is|does|where|when|which|show)\b/i.test(rawMatch);
+    if (!isQuestionWord && rawMatch.split(/\s+/).length <= 4) {
+      extractedTopic = rawMatch.replace(/\b\w/g, (c) => c.toUpperCase());
+    }
+  }
+
+  // Factual & Symbolic Lookups (direct, concise answers)
   if (queryLower.includes('sodium') || queryLower.includes('symbol of sodium')) {
     return {
       answer: "The chemical symbol for **Sodium** is **Na** (atomic number 11), derived from the Latin word *natrium*.",
-      detectedWeakness: null,
+      detectedWeakness: queryLower.includes('struggle') || queryLower.includes('confused') ? 'Chemical Symbols' : null,
       encouragement: "Quick factual recall builds a strong foundation for chemistry!",
       suggestedFollowUps: [
         "What is the electron configuration of Sodium?",
         "Why is Sodium highly reactive with water?"
-      ]
-    };
-  }
-
-  if (queryLower.includes('potassium')) {
-    return {
-      answer: "The chemical symbol for **Potassium** is **K** (atomic number 19), derived from the Neo-Latin word *kalium*.",
-      detectedWeakness: null,
-      encouragement: "Elemental symbols derived from Latin are classic exam favorites!",
-      suggestedFollowUps: [
-        "What group in the periodic table does Potassium belong to?",
-        "Why does Potassium have a lower ionization energy than Sodium?"
       ]
     };
   }
@@ -188,7 +204,7 @@ function generateLocalChatFallback(message: string, currentWeakTopics: string[] 
 - **Double Angle Formulas**:
   - $\\sin(2\\theta) = 2\\sin\\theta\\cos\\theta$
   - $\\cos(2\\theta) = \\cos^2\\theta - \\sin^2\\theta$`,
-      detectedWeakness: isStruggling ? 'Trigonometric Identities' : null,
+      detectedWeakness: isStruggling ? 'Trigonometric Identities' : (extractedTopic || null),
       encouragement: "Mastering these core identities makes calculus trigonometric substitution much easier!",
       suggestedFollowUps: [
         "How do I use double-angle formulas in calculus integrals?",
@@ -201,7 +217,7 @@ function generateLocalChatFallback(message: string, currentWeakTopics: string[] 
     const isStruggling = queryLower.includes('struggle') || queryLower.includes('confused') || queryLower.includes('help');
     return {
       answer: "The **mitochondrion** is known as the powerhouse of the cell because its primary role is generating **ATP** (Adenosine Triphosphate) through cellular respiration.",
-      detectedWeakness: isStruggling ? 'Cellular Respiration' : null,
+      detectedWeakness: isStruggling ? 'Cellular Respiration' : (extractedTopic || null),
       encouragement: "Connecting cell structures to energetic functions is fundamental in biology!",
       suggestedFollowUps: [
         "How do the inner cristae folds increase ATP production?",
@@ -214,7 +230,7 @@ function generateLocalChatFallback(message: string, currentWeakTopics: string[] 
     const isStruggling = queryLower.includes('struggle') || queryLower.includes('confused') || queryLower.includes('help');
     return {
       answer: "The **Calvin Cycle** occurs in the chloroplast stroma, using ATP and NADPH from the light reactions to fix CO₂ into G3P (Glyceraldehyde-3-phosphate).",
-      detectedWeakness: isStruggling ? 'Calvin Cycle' : null,
+      detectedWeakness: isStruggling ? 'Photosynthesis' : (extractedTopic || null),
       encouragement: "Understanding carbon fixation is key for plant biology exams!",
       suggestedFollowUps: [
         "What role does the RuBisCO enzyme play in carbon fixation?",
@@ -237,7 +253,7 @@ Use the **LIATE** rule to choose $u$:
 3. **A**lgebraic ($x^2$)
 4. **T**rigonometric ($\n\\sin x$)
 5. **E**xponential ($e^x$)`,
-      detectedWeakness: isStruggling ? 'Integration by Parts' : null,
+      detectedWeakness: isStruggling ? 'Integration by Parts' : (extractedTopic || null),
       encouragement: "Practicing the LIATE choice prevents calculus integration mistakes!",
       suggestedFollowUps: [
         "Show me a worked example using the LIATE rule",
@@ -250,7 +266,7 @@ Use the **LIATE** rule to choose $u$:
     const isStruggling = queryLower.includes('struggle') || queryLower.includes('confused') || queryLower.includes('help');
     return {
       answer: "An **AVL tree** is a self-balancing binary search tree where the height difference (balance factor) between left and right subtrees for any node is at most 1.",
-      detectedWeakness: isStruggling ? 'AVL Tree Rotations' : null,
+      detectedWeakness: isStruggling ? 'AVL Tree Rotations' : (extractedTopic || null),
       encouragement: "Data structure balancing guarantees O(log n) efficiency!",
       suggestedFollowUps: [
         "What are the four types of AVL tree rotations?",
@@ -259,15 +275,13 @@ Use the **LIATE** rule to choose $u$:
     };
   }
 
-  // Direct, concise default answer for standard academic questions
-  // NEVER output boilerplate "Academic Conceptual Guide" or raw prompt slice as weakness!
+  // Direct, concise answer for standard academic questions
+  const cleanMsg = message.trim();
   return {
-    answer: `Regarding **${message.trim()}**:
+    answer: `Here is a clear, direct explanation for **"${cleanMsg}"**:
 
-1. State the given parameters and core definitions.
-2. Apply the fundamental principles or formulas governing this subject.
-3. Test boundary values and verify units for consistency.`,
-    detectedWeakness: null,
+Focus on the core definitions, standard governing equations, and essential boundary conditions. Test your intuition by working through a representative problem step-by-step.`,
+    detectedWeakness: extractedTopic,
     encouragement: "Active inquiry is the fastest path to deep academic comprehension!",
     suggestedFollowUps: [
       "Could you provide a worked step-by-step example?",
@@ -451,7 +465,7 @@ Provide a pedagogically sound response strictly following the system instruction
           type: Type.OBJECT,
           properties: {
             answer: { type: Type.STRING, description: "Detailed pedagogical answer in Markdown" },
-            detectedWeakness: { type: Type.STRING, description: "Single 1-3 word academic topic if struggling, otherwise null" },
+            detectedWeakness: { type: Type.STRING, description: "Single 1-3 word academic topic if struggling or asking for help, otherwise null", nullable: true },
             encouragement: { type: Type.STRING, description: "Brief motivational tip" },
             suggestedFollowUps: {
               type: Type.ARRAY,
@@ -466,6 +480,12 @@ Provide a pedagogically sound response strictly following the system instruction
 
     const responseText = response.text || "{}";
     const parsedData = cleanAndParseJson(responseText);
+    if (parsedData.detectedWeakness) {
+      const dwStr = String(parsedData.detectedWeakness).trim();
+      if (dwStr.toLowerCase() === 'null' || dwStr.toLowerCase() === 'none' || dwStr === '') {
+        parsedData.detectedWeakness = null;
+      }
+    }
     return res.json(parsedData);
   } catch (error: any) {
     console.warn("Notice: Live Gemini call encountered error, using adaptive local fallback:", error?.message || error);
@@ -860,8 +880,11 @@ app.get("/api/notes", async (_req: Request, res: Response) => {
           const normCleanName = cleanName.toLowerCase().replace(/[^a-z0-9]/g, "");
           const normFName = f.name.toLowerCase().replace(/[^a-z0-9]/g, "");
 
+          const potentialId = `sup_mat_${f.name.replace(/[^a-zA-Z0-9_-]/g, "_")}`;
+
           // Check if any note already references this file
           const alreadyLinked = notes.some((n: any) =>
+            n.id === potentialId ||
             (n.attachments || []).some((a: any) => {
               if (!a) return false;
               const aName = (a.name || "").toLowerCase().replace(/[^a-z0-9]/g, "");
@@ -1008,26 +1031,11 @@ app.put("/api/notes/:id", (req: Request, res: Response) => {
 
     const notes = loadServerNotes();
     const index = notes.findIndex((n: any) => n.id === id);
-
-    let existingNote = index !== -1 ? notes[index] : null;
-    if (!existingNote) {
-      existingNote = {
-        id,
-        user_id: updateData.user_id || "community_user",
-        author_name: updateData.author_name || "Scholar",
-        title: updateData.title || "Study Material",
-        subject: updateData.subject || "General",
-        content: updateData.content || "",
-        upvotes: 1,
-        views: 1,
-        has_upvoted: false,
-        upvoted_by: [],
-        created_at: updateData.created_at || new Date().toISOString(),
-        attachments: [],
-        flashcards: [],
-      };
+    if (index === -1) {
+      return res.status(404).json({ error: "Note not found in community library." });
     }
 
+    const existingNote = notes[index];
     const cleanAttachments = updateData.attachments
       ? (updateData.attachments || []).map((att: any) => ({
           ...att,
@@ -1044,11 +1052,7 @@ app.put("/api/notes/:id", (req: Request, res: Response) => {
       updated_at: new Date().toISOString(),
     };
 
-    if (index === -1) {
-      notes.unshift(updatedNote);
-    } else {
-      notes[index] = updatedNote;
-    }
+    notes[index] = updatedNote;
     saveServerNotes(notes);
 
     return res.status(200).json(updatedNote);
@@ -1066,7 +1070,7 @@ app.post("/api/notes/:id/upvote", (req: Request, res: Response) => {
   const { id } = req.params;
   const { userId } = req.body || {};
   const notes = loadServerNotes();
-  let note = notes.find((n: any) => n.id === id);
+  let note = notes.find((n: any) => n.id === id || decodeURIComponent(n.id) === decodeURIComponent(id) || encodeURIComponent(n.id) === encodeURIComponent(id));
   if (!note) {
     note = {
       id,
@@ -1111,9 +1115,8 @@ app.post("/api/notes/:id/upvote", (req: Request, res: Response) => {
 // POST view a note (shared globally across all users)
 app.post("/api/notes/:id/view", (req: Request, res: Response) => {
   const { id } = req.params;
-  const currentViews = typeof req.body?.currentViews === 'number' ? req.body.currentViews : 0;
   const notes = loadServerNotes();
-  let note = notes.find((n: any) => n.id === id);
+  let note = notes.find((n: any) => n.id === id || decodeURIComponent(n.id) === decodeURIComponent(id) || encodeURIComponent(n.id) === encodeURIComponent(id));
   if (!note) {
     note = {
       id,
@@ -1123,16 +1126,15 @@ app.post("/api/notes/:id/view", (req: Request, res: Response) => {
       subject: "Mathematics",
       content: "Community study material.",
       upvotes: 1,
-      views: Math.max(1, currentViews),
+      views: 0,
       upvoted_by: [],
       created_at: new Date().toISOString(),
       attachments: []
     };
     notes.push(note);
-  } else {
-    note.views = Math.max((note.views || 0) + 1, currentViews);
   }
 
+  note.views = (note.views || 0) + 1;
   saveServerNotes(notes);
   return res.status(200).json({ id, views: note.views });
 });

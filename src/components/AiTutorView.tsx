@@ -14,7 +14,8 @@ import {
   ArrowRight,
   RefreshCw,
   Trash2,
-  RotateCcw
+  RotateCcw,
+  X
 } from 'lucide-react';
 import ReactMarkdown from 'react-markdown';
 import { ChatMessage, AdaptiveSummaryResult, PracticeQuestion, Subject, AttachedFile } from '../types';
@@ -73,6 +74,7 @@ export const AiTutorView: React.FC<AiTutorViewProps> = ({
   const [inputQuery, setInputQuery] = useState(() => {
     return localStorage.getItem('study_ai_chat_input') || '';
   });
+  const [newWeakTopicInput, setNewWeakTopicInput] = useState('');
   const [isAiTyping, setIsAiTyping] = useState(false);
   const chatBottomRef = useRef<HTMLDivElement>(null);
 
@@ -273,7 +275,7 @@ export const AiTutorView: React.FC<AiTutorViewProps> = ({
         suggestedFollowUps: res.suggestedFollowUps,
       };
 
-      // If weak point detected, automatically add to user profile if valid 2-3 word concept name
+      // If weak point detected, automatically add to user profile if valid concept name
       if (res.detectedWeakness) {
         const rawTag = String(res.detectedWeakness).trim();
         const isQuestion = /^(what|how|why|can|could|tell|explain|is|does|where|when|which|show|help)\b/i.test(rawTag) || rawTag.includes('?');
@@ -281,6 +283,15 @@ export const AiTutorView: React.FC<AiTutorViewProps> = ({
 
         if (!isQuestion && !isTooLong && rawTag.length >= 3) {
           onAddWeakTopic(rawTag);
+        }
+      } else {
+        // Also check if user explicitly stated struggle in prompt
+        const struggleMatch = query.match(/(?:struggl(?:e|ing) with|trouble with|confused (?:about|by)|don't understand|dont understand|help (?:me )?with|weak in|need help with|problem with)\s+([a-zA-Z0-9\s-]{3,35})/i);
+        if (struggleMatch && struggleMatch[1]) {
+          const cleanTopic = struggleMatch[1].replace(/[.,?!].*$/, '').trim();
+          if (cleanTopic.length >= 3 && cleanTopic.length <= 35 && cleanTopic.split(/\s+/).length <= 4) {
+            onAddWeakTopic(cleanTopic);
+          }
         }
       }
 
@@ -549,30 +560,87 @@ export const AiTutorView: React.FC<AiTutorViewProps> = ({
                 <span>Your Weak-Point Profile</span>
               </div>
               <p className="text-xs text-slate-500 dark:text-slate-400 leading-relaxed">
-                The AI automatically updates this list whenever you struggle with questions.
+                Add topics manually or let the AI automatically log concepts you find tricky.
               </p>
+
+              {/* Direct Topic Input Form */}
+              <form
+                onSubmit={(e) => {
+                  e.preventDefault();
+                  if (newWeakTopicInput.trim()) {
+                    onAddWeakTopic(newWeakTopicInput.trim());
+                    setNewWeakTopicInput('');
+                  }
+                }}
+                className="flex items-center gap-1.5 pt-1"
+              >
+                <input
+                  type="text"
+                  placeholder="Add a topic (e.g. Calculus)..."
+                  value={newWeakTopicInput}
+                  onChange={(e) => setNewWeakTopicInput(e.target.value)}
+                  className="flex-1 px-2.5 py-1.5 text-xs rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 text-slate-800 dark:text-slate-100 placeholder:text-slate-400 outline-none focus:border-amber-500"
+                />
+                <button
+                  type="submit"
+                  disabled={!newWeakTopicInput.trim()}
+                  className="px-2.5 py-1.5 bg-amber-500 hover:bg-amber-600 disabled:opacity-40 text-white font-bold text-xs rounded-xl transition cursor-pointer shrink-0"
+                >
+                  Add
+                </button>
+              </form>
 
               <div className="space-y-1.5 pt-2">
                 {weakTopics.map((topic, idx) => (
                   <div
                     key={idx}
-                    className="lift-card-subtle p-2 rounded-xl bg-amber-50/80 dark:bg-amber-950/40 border border-amber-200/80 dark:border-amber-900/60 flex items-center justify-between text-xs text-amber-950 dark:text-amber-200"
+                    className="lift-card-subtle p-2 rounded-xl bg-amber-50/80 dark:bg-amber-950/40 border border-amber-200/80 dark:border-amber-900/60 flex items-center justify-between text-xs text-amber-950 dark:text-amber-200 gap-1.5"
                   >
-                    <span className="font-semibold truncate max-w-[140px]">{topic}</span>
-                    <button
-                      onClick={() => handleSendMessage(`I need extra help understanding ${topic}. Can you test me with a problem?`)}
-                      className="text-[10px] font-bold text-indigo-600 dark:text-indigo-400 hover:underline"
-                    >
-                      Quiz Me
-                    </button>
+                    <span className="font-semibold truncate max-w-[125px]" title={topic}>{topic}</span>
+                    <div className="flex items-center gap-1 shrink-0">
+                      <button
+                        onClick={() => handleSendMessage(`I need extra help understanding ${topic}. Can you test me with a problem?`)}
+                        className="text-[10px] font-bold text-indigo-600 dark:text-indigo-400 hover:underline px-1.5 py-0.5 rounded bg-white/70 dark:bg-slate-800/70 cursor-pointer"
+                      >
+                        Quiz Me
+                      </button>
+                      <button
+                        onClick={() => onRemoveWeakTopic(topic)}
+                        className="p-1 text-slate-400 hover:text-rose-600 rounded-md hover:bg-rose-50 dark:hover:bg-rose-950/50 transition cursor-pointer"
+                        title={`Remove ${topic}`}
+                      >
+                        <X className="w-3 h-3" />
+                      </button>
+                    </div>
                   </div>
                 ))}
 
                 {weakTopics.length === 0 && (
-                  <p className="text-xs text-slate-400 dark:text-slate-500 italic">
+                  <p className="text-xs text-slate-400 dark:text-slate-500 italic py-1">
                     No weak points flagged yet.
                   </p>
                 )}
+              </div>
+
+              {/* Suggested Quick Add Topics */}
+              <div className="pt-2 border-t border-slate-100 dark:border-slate-800">
+                <span className="text-[10px] font-bold uppercase tracking-wider text-slate-400 block mb-1.5">
+                  Suggested Topics
+                </span>
+                <div className="flex flex-wrap gap-1">
+                  {['Trigonometry', 'Integration by Parts', 'AVL Trees', 'Organic Reactions']
+                    .filter((t) => !weakTopics.some((wt) => wt.toLowerCase() === t.toLowerCase()))
+                    .slice(0, 3)
+                    .map((suggestion) => (
+                      <button
+                        key={suggestion}
+                        onClick={() => onAddWeakTopic(suggestion)}
+                        className="text-[10px] px-2 py-0.5 rounded-lg bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300 hover:bg-amber-100 dark:hover:bg-amber-950/50 hover:text-amber-800 dark:hover:text-amber-300 transition cursor-pointer flex items-center gap-0.5"
+                      >
+                        <span>+ {suggestion}</span>
+                      </button>
+                    ))}
+                </div>
               </div>
             </div>
 

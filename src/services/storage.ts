@@ -386,36 +386,6 @@ export function saveSharedNotes(notes: SharedNote[]): void {
   }
 }
 
-const MY_UPLOADED_NOTES_KEY = 'paideutic_my_uploaded_note_ids';
-
-export function getMyUploadedNoteIds(): Set<string> {
-  if (typeof window === 'undefined') return new Set();
-  try {
-    const raw = localStorage.getItem(MY_UPLOADED_NOTES_KEY);
-    return raw ? new Set(JSON.parse(raw)) : new Set();
-  } catch {
-    return new Set();
-  }
-}
-
-export function recordMyUploadedNoteId(id: string): void {
-  if (typeof window === 'undefined' || !id) return;
-  try {
-    const set = getMyUploadedNoteIds();
-    set.add(id);
-    localStorage.setItem(MY_UPLOADED_NOTES_KEY, JSON.stringify(Array.from(set)));
-  } catch {}
-}
-
-export function removeMyUploadedNoteId(id: string): void {
-  if (typeof window === 'undefined' || !id) return;
-  try {
-    const set = getMyUploadedNoteIds();
-    set.delete(id);
-    localStorage.setItem(MY_UPLOADED_NOTES_KEY, JSON.stringify(Array.from(set)));
-  } catch {}
-}
-
 /**
  * Synchronize community notes from central backend & Supabase Storage
  * so all notes, views, and likes are globally synchronized across all users,
@@ -423,7 +393,7 @@ export function removeMyUploadedNoteId(id: string): void {
  */
 export async function syncSharedNotesFromServer(currentUserId?: string): Promise<SharedNote[]> {
   let notes = loadSharedNotes().filter((n) => !isExcludedNote(n));
-  const existingNotesMap = new Map(notes.map((n) => [n.id, n]));
+  const currentLocalMap = new Map<string, SharedNote>(notes.map((n) => [n.id, n]));
   const upvotedIds = new Set(notes.filter((n) => n.has_upvoted).map((n) => n.id));
   const deletedIds = getDeletedNoteIds();
 
@@ -441,16 +411,13 @@ export async function syncSharedNotesFromServer(currentUserId?: string): Promise
             ? (currentUserId ? sn.upvoted_by.includes(currentUserId) : upvotedIds.has(sn.id))
             : (upvotedIds.has(sn.id) || !!sn.has_upvoted);
 
-          const existingLocal = existingNotesMap.get(sn.id);
-          const preservedViews = Math.max(sn.views || 0, existingLocal?.views || 0, 1);
-          const preservedUpvotes = Math.max(sn.upvotes || 0, existingLocal?.upvotes || 0, 1);
-
+          const localMatch = currentLocalMap.get(sn.id);
           const formatted: SharedNote = {
             ...sn,
             author_name: sn.author_name || 'Scholar',
-            views: preservedViews,
-            upvotes: preservedUpvotes,
-            has_upvoted: userHasUpvoted,
+            has_upvoted: userHasUpvoted || !!localMatch?.has_upvoted,
+            upvotes: Math.max(Number(sn.upvotes) || 0, Number(localMatch?.upvotes) || 0),
+            views: Math.max(Number(sn.views) || 1, Number(localMatch?.views) || 1),
             attachments: (sn.attachments || []).map((a: any) => ({
               ...a,
               dataUrl: a.storageUrl || a.dataUrl,
@@ -684,7 +651,6 @@ export async function publishSharedNote(note: Omit<SharedNote, 'id' | 'created_a
   }
 
   // 3. Update local state cache with the database-confirmed record
-  recordMyUploadedNoteId(savedRecord.id);
   const currentNotes = loadSharedNotes();
   const updatedList = [savedRecord, ...currentNotes.filter((n) => n.id !== savedRecord.id && n.id !== newNote.id)];
   saveSharedNotes(updatedList);
@@ -703,21 +669,11 @@ export async function updateSharedNote(
   updates: Partial<Omit<SharedNote, 'id' | 'created_at'>>
 ): Promise<SharedNote | null> {
   const notes = loadSharedNotes();
-  let existing = notes.find((n) => n.id === noteId);
+  const existing = notes.find((n) => n.id === noteId);
   if (!existing) {
-    existing = {
-      id: noteId,
-      user_id: 'community_user',
-      author_name: 'Scholar',
-      title: updates.title || 'Study Material',
-      content: updates.content || '',
-      subject: updates.subject || 'General Study',
-      upvotes: 1,
-      views: 1,
-      created_at: new Date().toISOString(),
-      attachments: [],
-      flashcards: [],
-    };
+    const notFoundErr = new Error(`Note with ID "${noteId}" not found in library.`);
+    console.error(`Error in updateSharedNote:`, notFoundErr);
+    throw notFoundErr;
   }
 
   const cleanAttachments = updates.attachments
@@ -787,7 +743,6 @@ export async function updateSharedNote(
   }
 
   // 3. Update local state in-place by unique ID (no duplicates)
-  recordMyUploadedNoteId(noteId);
   const currentNotes = loadSharedNotes();
   const updatedList = currentNotes.map((n) => (n.id === noteId ? savedRecord : n));
   saveSharedNotes(updatedList);
@@ -803,17 +758,22 @@ export const updateNote = updateSharedNote;
 
 export async function toggleNoteUpvote(noteId: string, userId?: string): Promise<SharedNote[]> {
   const notes = loadSharedNotes();
-  const target = notes.find((n) => n.id === noteId);
+  const target = notes.find((n) => n.id === noteId || decodeURIComponent(n.id) === decodeURIComponent(noteId));
   if (!target) return notes;
 
   const willBeUpvoted = !target.has_upvoted;
-  const optimisticUpvotes = willBeUpvoted ? target.upvotes + 1 : Math.max(0, target.upvotes - 1);
+  const optimisticUpvotes = willBeUpvoted ? (target.upvotes || 0) + 1 : Math.max(0, (target.upvotes || 1) - 1);
 
   // Optimistic local update
   const updated = notes.map((n) =>
-    n.id === noteId ? { ...n, has_upvoted: willBeUpvoted, upvotes: optimisticUpvotes } : n
+    (n.id === noteId || decodeURIComponent(n.id) === decodeURIComponent(noteId))
+      ? { ...n, has_upvoted: willBeUpvoted, upvotes: optimisticUpvotes }
+      : n
   );
   saveSharedNotes(updated);
+  if (typeof window !== 'undefined') {
+    window.dispatchEvent(new CustomEvent('paideutic_notes_updated'));
+  }
 
   let finalUpvotes = optimisticUpvotes;
 
@@ -832,7 +792,7 @@ export async function toggleNoteUpvote(noteId: string, userId?: string): Promise
       }
       const current = loadSharedNotes();
       const confirmed = current.map((n) =>
-        n.id === noteId
+        (n.id === noteId || decodeURIComponent(n.id) === decodeURIComponent(noteId))
           ? {
               ...n,
               upvotes: finalUpvotes,
@@ -869,29 +829,36 @@ export async function toggleNoteUpvote(noteId: string, userId?: string): Promise
 
 export async function incrementNoteView(noteId: string): Promise<SharedNote[]> {
   const notes = loadSharedNotes();
-  const target = notes.find((n) => n.id === noteId);
+  const target = notes.find((n) => n.id === noteId || decodeURIComponent(n.id) === decodeURIComponent(noteId));
   if (!target) return notes;
 
-  const optimisticViews = target.views + 1;
-  const updated = notes.map((n) => (n.id === noteId ? { ...n, views: optimisticViews } : n));
+  const optimisticViews = (target.views || 0) + 1;
+  const updated = notes.map((n) =>
+    (n.id === noteId || decodeURIComponent(n.id) === decodeURIComponent(noteId))
+      ? { ...n, views: optimisticViews }
+      : n
+  );
   saveSharedNotes(updated);
+  if (typeof window !== 'undefined') {
+    window.dispatchEvent(new CustomEvent('paideutic_notes_updated'));
+  }
 
   let finalViews = optimisticViews;
 
   try {
     const res = await fetch(`/api/notes/${encodeURIComponent(noteId)}/view`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ currentViews: optimisticViews }),
     });
     if (res.ok) {
       const data = await res.json();
       if (typeof data.views === 'number') {
-        finalViews = Math.max(optimisticViews, data.views);
+        finalViews = data.views;
       }
       const current = loadSharedNotes();
       const confirmed = current.map((n) =>
-        n.id === noteId ? { ...n, views: Math.max(n.views || 0, finalViews) } : n
+        (n.id === noteId || decodeURIComponent(n.id) === decodeURIComponent(noteId))
+          ? { ...n, views: finalViews }
+          : n
       );
       saveSharedNotes(confirmed);
       if (typeof window !== 'undefined') {
@@ -1305,7 +1272,4 @@ export const StorageService = {
   recordFocusSession: recordFocusSession,
   getSupabaseConfig: getSupabaseConfig,
   setSupabaseConfig: setSupabaseConfig,
-  getMyUploadedNoteIds: getMyUploadedNoteIds,
-  recordMyUploadedNoteId: recordMyUploadedNoteId,
-  removeMyUploadedNoteId: removeMyUploadedNoteId,
 };

@@ -377,15 +377,34 @@ export function App() {
 
   const handleToggleUpvote = async (noteId: string) => {
     const uid = currentUser && !currentUser.is_guest ? currentUser.id : profile.id;
+    // Optimistic UI state update immediately
+    setNotes((prev) =>
+      prev.map((n) => {
+        if (n.id === noteId || decodeURIComponent(n.id) === decodeURIComponent(noteId)) {
+          const willBeUpvoted = !n.has_upvoted;
+          const nextUpvotes = willBeUpvoted ? (n.upvotes || 0) + 1 : Math.max(0, (n.upvotes || 1) - 1);
+          return { ...n, has_upvoted: willBeUpvoted, upvotes: nextUpvotes };
+        }
+        return n;
+      })
+    );
     const updated = await StorageService.toggleNoteUpvote(noteId, uid);
-    if (Array.isArray(updated)) {
+    if (Array.isArray(updated) && updated.length > 0) {
       setNotes(updated);
     }
   };
 
   const handleViewNote = async (noteId: string) => {
+    // Optimistic UI state update immediately
+    setNotes((prev) =>
+      prev.map((n) =>
+        n.id === noteId || decodeURIComponent(n.id) === decodeURIComponent(noteId)
+          ? { ...n, views: (n.views || 0) + 1 }
+          : n
+      )
+    );
     const updated = await StorageService.incrementNoteView(noteId);
-    if (Array.isArray(updated)) {
+    if (Array.isArray(updated) && updated.length > 0) {
       setNotes(updated);
     }
   };
@@ -426,11 +445,12 @@ export function App() {
     // Capitalize clean topic name
     trimmed = trimmed.replace(/\b\w/g, (char) => char.toUpperCase());
 
-    if (profile.weak_topics.includes(trimmed)) return;
+    const currentTopics = Array.isArray(profile.weak_topics) ? profile.weak_topics : [];
+    if (currentTopics.some((t) => t.toLowerCase() === trimmed.toLowerCase())) return;
 
     const updatedProfile: UserProfile = {
       ...profile,
-      weak_topics: [...profile.weak_topics, trimmed],
+      weak_topics: [trimmed, ...currentTopics],
     };
     setProfile(updatedProfile);
     const guestMode = !currentUser || currentUser.is_guest;
@@ -438,9 +458,10 @@ export function App() {
   };
 
   const handleRemoveWeakTopic = (topic: string) => {
+    const currentTopics = Array.isArray(profile.weak_topics) ? profile.weak_topics : [];
     const updatedProfile: UserProfile = {
       ...profile,
-      weak_topics: profile.weak_topics.filter((t) => t !== topic),
+      weak_topics: currentTopics.filter((t) => t.toLowerCase() !== topic.toLowerCase()),
     };
     setProfile(updatedProfile);
     const guestMode = !currentUser || currentUser.is_guest;

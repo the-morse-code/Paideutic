@@ -56,11 +56,50 @@ export async function sendChatMessage(
     };
   }
 
+  // 1. Math calculation pattern (e.g., "what is 3 + 2", "3+2", "calculate 15 * 4", "100 / 4")
+  const mathMatch = message.match(/(?:what\s+is\s+|calculate\s+|compute\s+)?(\d+(?:\.\d+)?)\s*([\+\-\*\/x×÷\^])\s*(\d+(?:\.\d+)?)/i);
+  if (mathMatch) {
+    const num1 = parseFloat(mathMatch[1]);
+    const op = mathMatch[2].toLowerCase();
+    const num2 = parseFloat(mathMatch[3]);
+    let result: number | null = null;
+    let opSymbol = op;
+    if (op === '+') { result = num1 + num2; opSymbol = '+'; }
+    else if (op === '-') { result = num1 - num2; opSymbol = '-'; }
+    else if (op === '*' || op === 'x' || op === '×') { result = num1 * num2; opSymbol = '×'; }
+    else if (op === '/' || op === '÷') { result = num2 !== 0 ? num1 / num2 : null; opSymbol = '÷'; }
+    else if (op === '^') { result = Math.pow(num1, num2); opSymbol = '^'; }
+
+    if (result !== null) {
+      const cleanRes = Number.isInteger(result) ? result.toString() : result.toFixed(2);
+      return {
+        answer: `${num1} ${opSymbol} ${num2} = **${cleanRes}**`,
+        detectedWeakness: null,
+        encouragement: "Quick arithmetic down pat! Keep up the momentum.",
+        suggestedFollowUps: [
+          `Can you explain how this applies in algebraic equations?`,
+          `Give me a practice problem using this operation.`
+        ]
+      };
+    }
+  }
+
+  // 2. Extract struggle topics directly (e.g., "I'm struggling with X", "I don't understand X", "help me with X")
+  const struggleMatch = message.match(/(?:struggling with|confused about|help (?:me )?with|trouble with|understand)\s+([A-Za-z0-9\s-]{3,35})/i);
+  let extractedTopic: string | null = null;
+  if (struggleMatch && struggleMatch[1]) {
+    const rawMatch = struggleMatch[1].trim().replace(/[?.!,]+$/, '');
+    const isQuestionWord = /^(what|how|why|can|could|tell|explain|is|does|where|when|which|show)\b/i.test(rawMatch);
+    if (!isQuestionWord && rawMatch.split(/\s+/).length <= 4) {
+      extractedTopic = rawMatch.replace(/\b\w/g, (c) => c.toUpperCase());
+    }
+  }
+
   // Factual & Symbolic Lookups (direct, concise answers)
   if (queryLower.includes('sodium') || queryLower.includes('symbol of sodium')) {
     return {
       answer: "The chemical symbol for **Sodium** is **Na** (atomic number 11), derived from the Latin word *natrium*.",
-      detectedWeakness: null,
+      detectedWeakness: queryLower.includes('struggle') || queryLower.includes('confused') ? 'Chemical Symbols' : null,
       encouragement: "Quick factual recall builds a strong foundation for chemistry!",
       suggestedFollowUps: [
         "What is the electron configuration of Sodium?",
@@ -79,7 +118,7 @@ export async function sendChatMessage(
 - **Double Angle Formulas**:
   - $\\sin(2\\theta) = 2\\sin\\theta\\cos\\theta$
   - $\\cos(2\\theta) = \\cos^2\\theta - \\sin^2\\theta$`,
-      detectedWeakness: isStruggling ? 'Trigonometric Identities' : null,
+      detectedWeakness: isStruggling ? 'Trigonometric Identities' : (extractedTopic || null),
       encouragement: "Mastering these core identities makes calculus trigonometric substitution much easier!",
       suggestedFollowUps: [
         "How do I use double-angle formulas in calculus integrals?",
@@ -92,7 +131,7 @@ export async function sendChatMessage(
     const isStruggling = queryLower.includes('struggle') || queryLower.includes('confused') || queryLower.includes('help');
     return {
       answer: "The **mitochondrion** is known as the powerhouse of the cell because its primary role is generating **ATP** (Adenosine Triphosphate) through cellular respiration.",
-      detectedWeakness: isStruggling ? 'Cellular Respiration' : null,
+      detectedWeakness: isStruggling ? 'Cellular Respiration' : (extractedTopic || null),
       encouragement: "Connecting biological structures directly to energetic mechanisms is key for exam success!",
       suggestedFollowUps: [
         "How do the folded cristae increase ATP synthesis efficiency?",
@@ -105,7 +144,7 @@ export async function sendChatMessage(
     const isStruggling = queryLower.includes('struggle') || queryLower.includes('confused') || queryLower.includes('help');
     return {
       answer: "The **Calvin Cycle** occurs inside the chloroplast stroma, using ATP and NADPH from the light reactions to convert CO₂ into G3P (Glyceraldehyde-3-phosphate).",
-      detectedWeakness: isStruggling ? 'Calvin Cycle' : null,
+      detectedWeakness: isStruggling ? 'Photosynthesis' : (extractedTopic || null),
       encouragement: "Mastering carbon fixation mechanisms gives you a strong edge on biology tests!",
       suggestedFollowUps: [
         "Why does RuBisCO cause photorespiration in hot climates?",
@@ -117,12 +156,10 @@ export async function sendChatMessage(
   // Direct, concise response for general academic queries
   const cleanMsg = message.trim();
   return {
-    answer: `Regarding **"${cleanMsg}"**:
+    answer: `Here is a clear, direct explanation for **"${cleanMsg}"**:
 
-1. State the given parameters and core definitions.
-2. Apply the fundamental principles governing this topic.
-3. Test boundary values and verify units for consistency.`,
-    detectedWeakness: null, // Never copy raw prompt string!
+Focus on the core definitions, standard governing equations, and essential boundary conditions. Test your intuition by working through a representative problem step-by-step.`,
+    detectedWeakness: extractedTopic,
     encouragement: 'Active inquiry accelerates deep academic comprehension!',
     suggestedFollowUps: [
       `Could you give a step-by-step worked example?`,
