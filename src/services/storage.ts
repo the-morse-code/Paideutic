@@ -288,21 +288,59 @@ export function cleanCompletedTasks(): Task[] {
 // SHARED NOTES OPERATIONS (Syncs with server & Supabase)
 // -------------------------------------------------------------
 const DELETED_NOTES_KEY = 'paideutic_deleted_note_ids';
+const MY_NOTES_KEY = 'paideutic_my_notes';
 const PERMANENT_EXCLUDED_NOTE_IDS = ['note_01', 'note_02', 'note_03', 'note_1788716473265_ilbs'];
+
+export function getMyNoteIds(): Set<string> {
+  if (typeof window === 'undefined') return new Set();
+  try {
+    const raw = localStorage.getItem(MY_NOTES_KEY);
+    return new Set(raw ? JSON.parse(raw) : []);
+  } catch {
+    return new Set();
+  }
+}
+
+export function addMyNoteId(id: string): void {
+  if (typeof window === 'undefined' || !id) return;
+  try {
+    const set = getMyNoteIds();
+    set.add(id);
+    localStorage.setItem(MY_NOTES_KEY, JSON.stringify(Array.from(set)));
+  } catch {}
+}
+
+export function removeMyNoteId(id: string): void {
+  if (typeof window === 'undefined' || !id) return;
+  try {
+    const set = getMyNoteIds();
+    set.delete(id);
+    localStorage.setItem(MY_NOTES_KEY, JSON.stringify(Array.from(set)));
+  } catch {}
+}
 
 export function getDeletedNoteIds(): Set<string> {
   if (typeof window === 'undefined') return new Set(PERMANENT_EXCLUDED_NOTE_IDS);
   try {
     const raw = localStorage.getItem(DELETED_NOTES_KEY);
     const list: string[] = raw ? JSON.parse(raw) : [];
-    return new Set([...PERMANENT_EXCLUDED_NOTE_IDS, ...list]);
+    // Only keep IDs that look like actual IDs or match permanent IDs (ignore accidental title strings)
+    const validIds = list.filter(
+      (id) =>
+        typeof id === 'string' &&
+        (id.startsWith('note_') ||
+          id.startsWith('sup_mat_') ||
+          id.startsWith('loc_mat_') ||
+          PERMANENT_EXCLUDED_NOTE_IDS.includes(id))
+    );
+    return new Set([...PERMANENT_EXCLUDED_NOTE_IDS, ...validIds]);
   } catch {
     return new Set(PERMANENT_EXCLUDED_NOTE_IDS);
   }
 }
 
 export function addDeletedNoteId(id: string): void {
-  if (typeof window === 'undefined') return;
+  if (typeof window === 'undefined' || !id) return;
   try {
     const set = getDeletedNoteIds();
     set.add(id);
@@ -334,8 +372,6 @@ export function isExcludedNote(note: any): boolean {
   const deleted = getDeletedNoteIds();
   if (note.id && deleted.has(note.id)) return true;
   if (note.id && PERMANENT_EXCLUDED_NOTE_IDS.includes(note.id)) return true;
-  if (note.title && deleted.has(note.title)) return true;
-  if (note.name && deleted.has(note.name)) return true;
   const title = (note.title || '').toLowerCase();
   if (
     title.includes('integration by parts') ||
@@ -675,6 +711,7 @@ export async function publishSharedNote(note: Omit<SharedNote, 'id' | 'created_a
   }
 
   // 3. Update local state cache with the database-confirmed record
+  addMyNoteId(savedRecord.id);
   const currentNotes = loadSharedNotes();
   const updatedList = [savedRecord, ...currentNotes.filter((n) => n.id !== savedRecord.id && n.id !== newNote.id)];
   saveSharedNotes(updatedList);
@@ -915,21 +952,9 @@ export async function deleteSharedNote(noteId: string): Promise<SharedNote[]> {
   const currentNotes = loadSharedNotes();
   const target = currentNotes.find((n) => n.id === noteId);
 
-  // Mark ID and all metadata as deleted locally
+  // Mark ID as deleted locally
   addDeletedNoteId(noteId);
-  if (target) {
-    if (target.title) addDeletedNoteId(target.title);
-    if (Array.isArray(target.attachments)) {
-      for (const att of target.attachments) {
-        if (att.name) addDeletedNoteId(att.name);
-        if (att.supabasePath) {
-          addDeletedNoteId(att.supabasePath);
-          const fname = att.supabasePath.split('/').pop();
-          if (fname) addDeletedNoteId(fname);
-        }
-      }
-    }
-  }
+  removeMyNoteId(noteId);
 
   // 1. Direct HTTP DELETE to central server database FIRST
   try {
@@ -939,7 +964,7 @@ export async function deleteSharedNote(noteId: string): Promise<SharedNote[]> {
     });
     if (!res.ok) {
       const errorText = await res.text().catch(() => res.statusText);
-      console.error(`Backend failed to delete note ${noteId} (HTTP ${res.status}):`, errorText);
+      console.warn(`Backend delete note response for ${noteId}:`, errorText);
     }
   } catch (e) {
     console.error('Error in deleteSharedNote API call:', e);
@@ -962,16 +987,24 @@ export async function deleteSharedNote(noteId: string): Promise<SharedNote[]> {
 
   // 3. Supabase Storage bucket file removal
   if (supabase && target && Array.isArray(target.attachments)) {
+    const pathsToRemove: string[] = [];
     for (const att of target.attachments) {
       if (att.supabasePath) {
-        try {
-          await supabase.storage.from('Material Library').remove([att.supabasePath]);
-        } catch {}
+        pathsToRemove.push(att.supabasePath);
       }
-      if (att.name) {
-        try {
-          await supabase.storage.from('Material Library').remove([`Uploaded Material/${att.name}`, att.name]);
-        } catch {}
+      if (att.storageUrl) {
+        const fname = att.storageUrl.split('/').pop();
+        if (fname) {
+          pathsToRemove.push(`Uploaded Material/${fname}`);
+          pathsToRemove.push(fname);
+        }
+      }
+    }
+    if (pathsToRemove.length > 0) {
+      try {
+        await supabase.storage.from('Material Library').remove(pathsToRemove);
+      } catch (e) {
+        console.warn('Supabase bucket remove notice:', e);
       }
     }
   }

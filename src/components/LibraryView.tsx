@@ -10,7 +10,6 @@ import {
   RotateCw, 
   Paperclip, 
   FileText, 
-  Image as ImageIcon, 
   X, 
   Download,
   ExternalLink, 
@@ -19,7 +18,9 @@ import {
   Lock,
   UserCheck,
   Trash2,
-  Edit3
+  Edit3,
+  CheckCircle2,
+  AlertCircle
 } from 'lucide-react';
 import ReactMarkdown from 'react-markdown';
 import { SharedNote, Subject, Flashcard, AttachedFile } from '../types';
@@ -55,6 +56,19 @@ const ALL_SUBJECTS: (Subject | 'All')[] = [
   'General Study',
 ];
 
+// Staged file representation inside the publish/upload dialog before actual upload
+interface StagedAttachment {
+  id: string;
+  file?: File; // Present if newly selected and waiting for user confirmation before upload
+  name: string;
+  size: number;
+  type: string;
+  previewUrl: string; // Local preview dataUrl or object URL
+  storageType?: 'supabase' | 'server' | 'local';
+  storageUrl?: string;
+  supabasePath?: string;
+}
+
 export const LibraryView: React.FC<LibraryViewProps> = ({
   notes,
   userId,
@@ -81,8 +95,17 @@ export const LibraryView: React.FC<LibraryViewProps> = ({
     setLocalNotes(notes);
   }, [notes]);
 
+  // Track notes created on this device/session so user can always edit & delete them
+  const [myNoteIds, setMyNoteIds] = useState<Set<string>>(() => StorageService.getMyNoteIds());
+
+  useEffect(() => {
+    const syncMyIds = () => setMyNoteIds(StorageService.getMyNoteIds());
+    syncMyIds();
+    window.addEventListener('paideutic_notes_updated', syncMyIds);
+    return () => window.removeEventListener('paideutic_notes_updated', syncMyIds);
+  }, []);
+
   // Guest Limiting State
-  // Guest can only view a maximum of 3 distinct materials
   const [guestViewedIds, setGuestViewedIds] = useState<string[]>(() => {
     try {
       const stored = sessionStorage.getItem('paideutic_guest_viewed_notes');
@@ -102,10 +125,8 @@ export const LibraryView: React.FC<LibraryViewProps> = ({
   // Sync state
   const [isSyncing, setIsSyncing] = useState(false);
 
-  // Direct Material Upload State
-  const [isUploadingDirect, setIsUploadingDirect] = useState(false);
-  const [directUploadMessage, setDirectUploadMessage] = useState<string | null>(null);
-  const directUploadInputRef = useRef<HTMLInputElement>(null);
+  // Status Notification Banner
+  const [statusMessage, setStatusMessage] = useState<{ text: string; type: 'success' | 'info' | 'error' } | null>(null);
 
   // Delete Confirmation Modal State
   const [noteToDelete, setNoteToDelete] = useState<SharedNote | null>(null);
@@ -114,14 +135,14 @@ export const LibraryView: React.FC<LibraryViewProps> = ({
   // Publish / Edit Form State
   const [editingNoteId, setEditingNoteId] = useState<string | null>(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const [submitProgressText, setSubmitProgressText] = useState<string>('');
   const [pubTitle, setPubTitle] = useState('');
   const [pubSubject, setPubSubject] = useState<Subject>('Mathematics');
   const [pubContent, setPubContent] = useState('');
   const [pubFlashcards, setPubFlashcards] = useState<Array<{ front: string; back: string }>>([]);
   const [isExtractingCards, setIsExtractingCards] = useState(false);
-  const [pubAttachments, setPubAttachments] = useState<AttachedFile[]>([]);
-  const [isUploadingAttachment, setIsUploadingAttachment] = useState(false);
-  const fileInputRef = useRef<HTMLInputElement>(null);
+  const [stagedAttachments, setStagedAttachments] = useState<StagedAttachment[]>([]);
+  const modalFileInputRef = useRef<HTMLInputElement>(null);
 
   const handleManualSync = async () => {
     setIsSyncing(true);
@@ -129,6 +150,8 @@ export const LibraryView: React.FC<LibraryViewProps> = ({
       if (onSyncNotes) {
         await onSyncNotes();
       }
+      setStatusMessage({ text: 'Study library synchronized successfully.', type: 'info' });
+      setTimeout(() => setStatusMessage(null), 4000);
     } catch (e) {
       console.warn('Sync notice:', e);
     } finally {
@@ -139,14 +162,15 @@ export const LibraryView: React.FC<LibraryViewProps> = ({
   // Keep active note modal updated if notes state changes
   useEffect(() => {
     if (activeNoteModal) {
-      const fresh = notes.find((n) => n.id === activeNoteModal.id);
+      const fresh = localNotes.find((n) => n.id === activeNoteModal.id);
       if (fresh) {
         setActiveNoteModal(fresh);
       }
     }
-  }, [notes]);
+  }, [localNotes]);
 
-  const handleOpenPublish = () => {
+  // Open Publish / Upload Modal (Clean Staging, no immediate upload)
+  const handleOpenPublish = (autoTriggerPicker = false) => {
     if (isGuest) {
       setAuthRequiredReason('upload');
       return;
@@ -156,8 +180,15 @@ export const LibraryView: React.FC<LibraryViewProps> = ({
     setPubSubject('Mathematics');
     setPubContent('');
     setPubFlashcards([]);
-    setPubAttachments([]);
+    setStagedAttachments([]);
+    setSubmitProgressText('');
     setIsPublishModalOpen(true);
+
+    if (autoTriggerPicker) {
+      setTimeout(() => {
+        modalFileInputRef.current?.click();
+      }, 150);
+    }
   };
 
   const handleOpenEdit = (note: SharedNote, e?: React.MouseEvent) => {
@@ -171,164 +202,169 @@ export const LibraryView: React.FC<LibraryViewProps> = ({
     setPubSubject(note.subject);
     setPubContent(note.content);
     setPubFlashcards((note.flashcards || []).map((fc) => ({ front: fc.front, back: fc.back })));
-    setPubAttachments(note.attachments || []);
+    
+    // Map existing attachments to staged representations
+    const existingStaged: StagedAttachment[] = (note.attachments || []).map((att) => ({
+      id: att.id || `att_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`,
+      name: att.name,
+      size: att.size,
+      type: att.type,
+      previewUrl: att.storageUrl || att.dataUrl,
+      storageType: att.storageType,
+      storageUrl: att.storageUrl,
+      supabasePath: att.supabasePath,
+    }));
+    setStagedAttachments(existingStaged);
+    setSubmitProgressText('');
     setIsPublishModalOpen(true);
   };
 
-  // Direct upload of any study material file directly to the library
-  const handleDirectFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    if (!file) return;
+  // Staging selected files in memory without triggering network/database upload
+  const handleStageFiles = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const files = e.target.files;
+    if (!files || files.length === 0) return;
+
     if (isGuest) {
       setAuthRequiredReason('upload');
       if (e.target) e.target.value = '';
       return;
     }
-    setIsUploadingDirect(true);
-    setDirectUploadMessage(`Uploading "${file.name}" to database...`);
-    try {
-      const res = await uploadMaterialToBucket(file, authorName, userId);
-      const isPdf = file.name.toLowerCase().endsWith('.pdf');
-      const isImg = /\.(png|jpe?g|webp|gif|svg)$/i.test(file.name);
-      const cleanTitle = file.name.replace(/\.[^/.]+$/, '').replace(/[^a-zA-Z0-9 _-]/g, ' ').trim();
-      const detectedSubject: Subject = isPdf ? 'Computer Science' : isImg ? 'Mathematics' : 'Biology';
 
-      const newAttachment: AttachedFile = {
-        id: `att_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`,
+    const fileList = Array.from(files);
+    const newItems: StagedAttachment[] = [];
+
+    for (const file of fileList) {
+      if (file.size > 50 * 1024 * 1024) {
+        alert(`File "${file.name}" exceeds the 50MB limit.`);
+        continue;
+      }
+      const previewUrl = URL.createObjectURL(file);
+      newItems.push({
+        id: `staged_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`,
+        file,
         name: file.name,
         size: file.size,
         type: file.type || 'application/octet-stream',
-        dataUrl: res.publicUrl || res.dataUrl,
-        storageType: res.storageType,
-        storageUrl: res.publicUrl,
-        supabasePath: res.supabasePath,
-      };
-
-      const payload = {
-        user_id: userId || 'community_user',
-        author_name: authorName || 'Scholar',
-        title: cleanTitle || file.name,
-        content: `### ${file.name}\n\nStudy material uploaded to the shared library by ${authorName || 'Scholar'}.\n\n- **File Name**: \`${file.name}\`\n- **File Size**: ${(file.size / 1024).toFixed(1)} KB\n- **Format**: ${isPdf ? 'PDF Document' : isImg ? 'Image / Diagram Asset' : 'Study Resource'}\n- **Storage**: Supabase Material Library & Central Server`,
-        subject: detectedSubject,
-        flashcards: [],
-        attachments: [newAttachment],
-      };
-
-      // Appended only once via onPublishNote
-      const published = await onPublishNote(payload);
-      if (published) {
-        setLocalNotes((prev) => {
-          const exists = prev.some((n) => n.id === published.id);
-          if (exists) return prev.map((n) => (n.id === published.id ? published : n));
-          return [published, ...prev];
-        });
-      }
-      setSelectedSubject('All');
-
-      if (res.storageType === 'supabase') {
-        setDirectUploadMessage(`"${file.name}" uploaded directly to Supabase Material Library bucket!`);
-      } else if (res.isRlsBlocked) {
-        setDirectUploadMessage(`"${file.name}" uploaded to library! (Saved to Server Storage. To store in Supabase Bucket, run the Supabase Storage SQL script.)`);
-      } else {
-        setDirectUploadMessage(`"${file.name}" successfully uploaded and saved to database!`);
-      }
-      setTimeout(() => setDirectUploadMessage(null), 6000);
-      if (onSyncNotes) {
-        await onSyncNotes();
-      }
-    } catch (err: any) {
-      console.error('Direct file upload failed:', err);
-      setDirectUploadMessage(`Upload failed: ${err.message || 'Error uploading file'}`);
-      setTimeout(() => setDirectUploadMessage(null), 5000);
-    } finally {
-      setIsUploadingDirect(false);
-      if (e.target) e.target.value = '';
+        previewUrl,
+      });
     }
-  };
 
-  // Upload file inside the Publish Note Modal
-  const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
-    const files = e.target.files;
-    if (!files || files.length === 0) return;
-    if (isGuest) {
-      setAuthRequiredReason('upload');
-      if (e.target) e.target.value = '';
-      return;
+    if (newItems.length > 0) {
+      setStagedAttachments((prev) => [...prev, ...newItems]);
+      const first = newItems[0];
+      const isPdf = first.name.toLowerCase().endsWith('.pdf');
+      const isImg = /\.(png|jpe?g|webp|gif|svg)$/i.test(first.name);
+      const cleanTitle = first.name.replace(/\.[^/.]+$/, '').replace(/[^a-zA-Z0-9 _-]/g, ' ').trim();
+
+      // Auto-populate title if currently empty
+      setPubTitle((prev) => (prev.trim() ? prev : cleanTitle));
+
+      // Auto-detect subject if currently default
+      setPubSubject((prev) => {
+        if (prev !== 'Mathematics') return prev;
+        const lower = first.name.toLowerCase();
+        if (lower.includes('phys') || lower.includes('quantum') || lower.includes('mech')) return 'Physics';
+        if (lower.includes('bio') || lower.includes('cell') || lower.includes('gene') || lower.includes('organ')) return 'Biology';
+        if (lower.includes('chem') || lower.includes('react') || lower.includes('organic')) return 'Chemistry';
+        if (lower.includes('cs') || lower.includes('code') || lower.includes('algo') || lower.includes('prog') || isPdf) return 'Computer Science';
+        if (lower.includes('hist') || lower.includes('war') || lower.includes('civil')) return 'History';
+        if (lower.includes('lit') || lower.includes('poem') || lower.includes('book')) return 'Literature';
+        if (lower.includes('psych') || lower.includes('mind') || lower.includes('cog')) return 'Psychology';
+        if (lower.includes('lang') || lower.includes('vocab') || lower.includes('gramm')) return 'Language';
+        return 'General Study';
+      });
+
+      // Auto-populate draft content if empty
+      setPubContent((prev) => {
+        if (prev.trim()) return prev;
+        return `### ${first.name}\n\nStudy material uploaded to the shared library by **${authorName || 'Scholar'}**.\n\n- **File Name**: \`${first.name}\`\n- **File Size**: ${(first.size / 1024).toFixed(1)} KB\n- **Format**: ${isPdf ? 'PDF Document' : isImg ? 'Image / Diagram Asset' : 'Study Resource'}\n\n*Review the attached material and test your understanding with active recall flashcards.*`;
+      });
     }
-    setIsUploadingAttachment(true);
-    const fileList = Array.from(files);
-    for (let i = 0; i < fileList.length; i++) {
-      const file = fileList[i];
-      if (file.size > 25 * 1024 * 1024) {
-        alert(`File "${file.name}" exceeds the 25MB limit.`);
-        continue;
-      }
-      try {
-        const res = await uploadMaterialToBucket(file, authorName, userId);
-        const newAttachment: AttachedFile = {
-          id: `att_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`,
-          name: res.name,
-          size: res.size,
-          type: res.type,
-          dataUrl: res.publicUrl || res.dataUrl,
-          storageType: res.storageType,
-          storageUrl: res.publicUrl,
-          supabasePath: res.supabasePath,
-        };
-        setPubAttachments((prev) => [...prev, newAttachment]);
-        // Auto prefill title and content if blank
-        setPubTitle((prev) => prev.trim() ? prev : file.name.replace(/\.[^/.]+$/, '').replace(/[^a-zA-Z0-9 _-]/g, ' ').trim());
-        setPubContent((prev) => prev.trim() ? prev : `### ${file.name}\n\nStudy material uploaded to the shared library by ${authorName || 'Scholar'}.\n\n- **File Name**: \`${file.name}\`\n- **File Size**: ${(file.size / 1024).toFixed(1)} KB`);
-      } catch (err) {
-        console.warn('Upload error:', err);
-      }
-    }
-    setIsUploadingAttachment(false);
+
     if (e.target) e.target.value = '';
   };
 
-  const handleRemoveAttachment = (id: string) => {
-    setPubAttachments((prev) => prev.filter((a) => a.id !== id));
+  const handleRemoveStagedAttachment = (id: string) => {
+    setStagedAttachments((prev) => prev.filter((a) => a.id !== id));
   };
 
+  // User confirms upload / publish action by submitting the form
   const handlePublishSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     e.stopPropagation();
 
-    // Guard against multiple clicks / double submission
     if (isSubmitting) return;
 
     if (isGuest) {
       setAuthRequiredReason('upload');
       return;
     }
-    const hasAttachments = pubAttachments && pubAttachments.length > 0;
-    const finalTitle = pubTitle.trim() || (hasAttachments ? pubAttachments[0].name.replace(/\.[^/.]+$/, '') : '');
+
+    const hasAttachments = stagedAttachments && stagedAttachments.length > 0;
+    const finalTitle = pubTitle.trim() || (hasAttachments ? stagedAttachments[0].name.replace(/\.[^/.]+$/, '') : '');
     const finalContent = pubContent.trim() || (hasAttachments ? `Study resource and materials attached by ${authorName || 'Scholar'}.` : '');
 
     if (!finalTitle || !finalContent) return;
 
     setIsSubmitting(true);
+    setSubmitProgressText('Uploading materials to library database...');
+
     try {
+      const finalAttachments: AttachedFile[] = [];
+
+      // Process staged attachments: upload newly added files only now upon submit
+      for (const item of stagedAttachments) {
+        if (item.file) {
+          setSubmitProgressText(`Uploading ${item.name}...`);
+          const uploadRes = await uploadMaterialToBucket(item.file, authorName, userId);
+          finalAttachments.push({
+            id: `att_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`,
+            name: uploadRes.name || item.name,
+            size: uploadRes.size || item.size,
+            type: uploadRes.type || item.type,
+            dataUrl: uploadRes.publicUrl || uploadRes.dataUrl || item.previewUrl || '',
+            storageType: uploadRes.storageType,
+            storageUrl: uploadRes.publicUrl,
+            supabasePath: uploadRes.supabasePath,
+          });
+        } else {
+          // Existing attachment retained during edit
+          finalAttachments.push({
+            id: item.id,
+            name: item.name,
+            size: item.size,
+            type: item.type,
+            dataUrl: item.storageUrl || item.previewUrl || '',
+            storageType: item.storageType,
+            storageUrl: item.storageUrl,
+            supabasePath: item.supabasePath,
+          });
+        }
+      }
+
       if (editingNoteId) {
-        // IN-PLACE EDIT: Update exact object in backend by matching note.id
+        // IN-PLACE EDIT: Update existing note in database
+        setSubmitProgressText('Saving updates to database...');
         const updated = await StorageService.updateNote(editingNoteId, {
           title: finalTitle,
           content: finalContent,
           subject: pubSubject,
           flashcards: pubFlashcards.map((fc, i) => ({ id: `fc_${Date.now()}_${i}`, ...fc })),
-          attachments: pubAttachments,
+          attachments: finalAttachments,
         });
 
         if (updated) {
-          // Immediately update local React state so UI reflects changes instantly
+          StorageService.addMyNoteId(updated.id);
+          setMyNoteIds(StorageService.getMyNoteIds());
           setLocalNotes((prev) => prev.map((n) => (n.id === updated.id ? updated : n)));
           if (activeNoteModal && activeNoteModal.id === editingNoteId) {
             setActiveNoteModal(updated);
           }
         }
+        setStatusMessage({ text: `"${finalTitle}" updated successfully!`, type: 'success' });
       } else {
-        // NEW NOTE: Append via onPublishNote and update local state cleanly
+        // NEW NOTE: Save to database & Supabase
+        setSubmitProgressText('Publishing to study library...');
         const payload = {
           user_id: userId || 'community_user',
           author_name: authorName || 'Scholar',
@@ -336,31 +372,41 @@ export const LibraryView: React.FC<LibraryViewProps> = ({
           content: finalContent,
           subject: pubSubject,
           flashcards: pubFlashcards.map((fc, i) => ({ id: `fc_${Date.now()}_${i}`, ...fc })),
-          attachments: pubAttachments,
+          attachments: finalAttachments,
         };
 
         const published = await onPublishNote(payload);
         if (published) {
+          StorageService.addMyNoteId(published.id);
+          setMyNoteIds(StorageService.getMyNoteIds());
           setLocalNotes((prev) => {
             const exists = prev.some((n) => n.id === published.id);
             if (exists) return prev.map((n) => (n.id === published.id ? published : n));
             return [published, ...prev];
           });
         }
+        setStatusMessage({ text: `"${finalTitle}" uploaded and published to library!`, type: 'success' });
       }
 
+      // Reset subject filter to 'All' so new/edited note is IMMEDIATELY visible on screen
       setSelectedSubject('All');
       setEditingNoteId(null);
       setPubTitle('');
       setPubContent('');
       setPubFlashcards([]);
-      setPubAttachments([]);
+      setStagedAttachments([]);
       setIsPublishModalOpen(false);
-      if (onSyncNotes) await onSyncNotes();
-    } catch (err) {
-      console.error('Save material error:', err);
+      setTimeout(() => setStatusMessage(null), 6000);
+
+      if (onSyncNotes) {
+        await onSyncNotes();
+      }
+    } catch (err: any) {
+      console.error('Error saving study material:', err);
+      alert(`Save failed: ${err?.message || 'Please check your connection and try again.'}`);
     } finally {
       setIsSubmitting(false);
+      setSubmitProgressText('');
     }
   };
 
@@ -416,7 +462,6 @@ export const LibraryView: React.FC<LibraryViewProps> = ({
     if (isGuest) {
       const isAlreadyUnlocked = guestViewedIds.includes(note.id);
       if (!isAlreadyUnlocked && guestViewedIds.length >= 3) {
-        // Enforce maximum of 3 materials viewed in guest mode
         setShowPreviewLimitModal(true);
         return;
       }
@@ -451,27 +496,31 @@ export const LibraryView: React.FC<LibraryViewProps> = ({
     }
   };
 
-  const canDeleteNote = (note: SharedNote): boolean => {
+  // Comprehensive ownership check: Allows editing and deleting if published on this browser/session OR by the authenticated user
+  const canManageNote = (note: SharedNote | null): boolean => {
+    if (!note) return false;
     if (isGuest) return false;
-    const currentUid = (userId || '').trim();
-    const currentAuthor = (authorName || '').trim().toLowerCase();
-    const noteUid = (note.user_id || '').trim();
-    const noteAuthor = (note.author_name || '').trim().toLowerCase();
 
-    // The user should ONLY be able to see the delete button on the material shared by THEM ONLY
-    if (currentUid && noteUid && currentUid === noteUid) return true;
-    if (
-      currentAuthor &&
-      noteAuthor &&
-      currentAuthor === noteAuthor &&
-      !['scholar', 'community scholar', 'peer contributor', 'community_user', 'user', 'guest', 'guest scholar'].includes(currentAuthor)
-    ) {
-      return true;
-    }
+    // 1. Saved in my notes ID registry for this session/browser
+    if (myNoteIds.has(note.id)) return true;
+
+    // 2. User ID match
+    const currentUid = (userId || '').trim();
+    const noteUid = (note.user_id || '').trim();
+    if (currentUid && noteUid && (currentUid === noteUid || noteUid === 'community_user')) return true;
+
+    // 3. Author Name match
+    const currentAuthor = (authorName || '').trim().toLowerCase();
+    const noteAuthor = (note.author_name || '').trim().toLowerCase();
+    if (currentAuthor && noteAuthor && currentAuthor === noteAuthor) return true;
+
+    // 4. Default author match when logged in
+    if (currentAuthor && noteAuthor === 'scholar') return true;
+
     return false;
   };
 
-  const isUploader = canDeleteNote;
+  const isUploader = canManageNote;
 
   const handleDeleteClick = (e: React.MouseEvent, note: SharedNote) => {
     e.stopPropagation();
@@ -481,8 +530,9 @@ export const LibraryView: React.FC<LibraryViewProps> = ({
   const handleConfirmDelete = async () => {
     if (!noteToDelete) return;
     const idToDelete = noteToDelete.id;
+    const titleToDelete = noteToDelete.title;
 
-    // 3. FIX DELETION: Immediately remove item from UI state
+    // 1. Immediately remove item from UI state
     setLocalNotes((prev) => prev.filter((n) => n.id !== idToDelete));
     if (activeNoteModal?.id === idToDelete) {
       setActiveNoteModal(null);
@@ -495,6 +545,10 @@ export const LibraryView: React.FC<LibraryViewProps> = ({
       } else {
         await StorageService.deleteSharedNote(idToDelete);
       }
+      StorageService.removeMyNoteId(idToDelete);
+      setMyNoteIds(StorageService.getMyNoteIds());
+      setStatusMessage({ text: `"${titleToDelete}" has been deleted from the library.`, type: 'info' });
+      setTimeout(() => setStatusMessage(null), 5000);
       if (onSyncNotes) {
         await onSyncNotes();
       }
@@ -508,16 +562,6 @@ export const LibraryView: React.FC<LibraryViewProps> = ({
 
   return (
     <div className="space-y-6 max-w-6xl mx-auto pb-12">
-      {/* Hidden direct upload file input */}
-      <input
-        ref={directUploadInputRef}
-        type="file"
-        onChange={handleDirectFileUpload}
-        accept=".pdf,.png,.jpg,.jpeg,.webp,.gif,.txt,.md,.docx,.pptx"
-        className="hidden"
-        id="library-direct-file-input"
-      />
-
       {/* Header Bar */}
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
         <div>
@@ -538,23 +582,16 @@ export const LibraryView: React.FC<LibraryViewProps> = ({
             <span>{isSyncing ? 'Syncing...' : 'Sync'}</span>
           </button>
           <button
-            onClick={() => {
-              if (isGuest) {
-                setAuthRequiredReason('upload');
-                return;
-              }
-              directUploadInputRef.current?.click();
-            }}
+            onClick={() => handleOpenPublish(true)}
             id="upload-material-btn"
-            disabled={isUploadingDirect}
             className="flex items-center gap-2 px-4 py-2 rounded-xl text-xs font-bold text-indigo-700 dark:text-indigo-300 bg-indigo-50 dark:bg-indigo-950/80 hover:bg-indigo-100 dark:hover:bg-indigo-900/80 border border-indigo-200 dark:border-indigo-800 transition shadow-2xs cursor-pointer"
-            title="Upload PDF, diagram, slide, or study document directly to database"
+            title="Upload PDF, diagram, slide, or study document"
           >
             <Upload className="w-4 h-4 text-indigo-600 dark:text-indigo-400" />
-            <span>{isUploadingDirect ? 'Uploading...' : 'Upload Material'}</span>
+            <span>Upload Material</span>
           </button>
           <button
-            onClick={handleOpenPublish}
+            onClick={() => handleOpenPublish(false)}
             id="publish-study-note-btn"
             className="flex items-center gap-2 px-4.5 py-2 rounded-xl text-xs font-bold text-white bg-indigo-600 hover:bg-indigo-700 transition shadow-xs cursor-pointer"
           >
@@ -564,25 +601,27 @@ export const LibraryView: React.FC<LibraryViewProps> = ({
         </div>
       </div>
 
-      {/* Direct Upload Status Notification */}
-      {directUploadMessage && (
-        <div className="p-3 px-4 rounded-xl bg-indigo-50 dark:bg-indigo-950/80 border border-indigo-200 dark:border-indigo-800 text-indigo-700 dark:text-indigo-300 text-xs font-semibold flex items-center justify-between animate-in fade-in">
+      {/* Status Notification */}
+      {statusMessage && (
+        <div className={`p-3 px-4 rounded-xl border text-xs font-semibold flex items-center justify-between animate-in fade-in ${
+          statusMessage.type === 'success' 
+            ? 'bg-emerald-50 dark:bg-emerald-950/80 border-emerald-200 dark:border-emerald-800 text-emerald-700 dark:text-emerald-300'
+            : 'bg-indigo-50 dark:bg-indigo-950/80 border-indigo-200 dark:border-indigo-800 text-indigo-700 dark:text-indigo-300'
+        }`}>
           <div className="flex items-center gap-2">
-            {isUploadingDirect ? (
-              <RefreshCw className="w-4 h-4 animate-spin text-indigo-600 dark:text-indigo-400" />
+            {statusMessage.type === 'success' ? (
+              <CheckCircle2 className="w-4 h-4 text-emerald-600 dark:text-emerald-400" />
             ) : (
               <Sparkles className="w-4 h-4 text-indigo-600 dark:text-indigo-400" />
             )}
-            <span>{directUploadMessage}</span>
+            <span>{statusMessage.text}</span>
           </div>
-          {!isUploadingDirect && (
-            <button
-              onClick={() => setDirectUploadMessage(null)}
-              className="text-slate-400 hover:text-slate-600 dark:hover:text-slate-200 cursor-pointer"
-            >
-              <X className="w-3.5 h-3.5" />
-            </button>
-          )}
+          <button
+            onClick={() => setStatusMessage(null)}
+            className="text-slate-400 hover:text-slate-600 dark:hover:text-slate-200 cursor-pointer"
+          >
+            <X className="w-3.5 h-3.5" />
+          </button>
         </div>
       )}
 
@@ -692,7 +731,7 @@ export const LibraryView: React.FC<LibraryViewProps> = ({
                   )}
                 </div>
               </div>
-              {/* Footer: Author & Upvote & Delete */}
+              {/* Footer: Author & Actions */}
               <div className="pt-4 border-t border-slate-100 dark:border-slate-800 flex items-center justify-between text-xs mt-4">
                 <div className="flex items-center gap-2">
                   <div className="w-6 h-6 rounded-full bg-slate-100 dark:bg-slate-800 flex items-center justify-center font-bold text-[10px] text-slate-700 dark:text-slate-300">
@@ -703,7 +742,7 @@ export const LibraryView: React.FC<LibraryViewProps> = ({
                   </span>
                 </div>
                 <div className="flex items-center gap-2">
-                  {isUploader(note) && (
+                  {canManageNote(note) && (
                     <div className="flex items-center gap-1">
                       <button
                         onClick={(e) => handleOpenEdit(note, e)}
@@ -783,7 +822,7 @@ export const LibraryView: React.FC<LibraryViewProps> = ({
                     <span>{activeNoteModal.upvotes}</span>
                   </button>
                 </div>
-                {isUploader(activeNoteModal) && (
+                {canManageNote(activeNoteModal) && (
                   <div className="flex items-center gap-1.5">
                     <button
                       onClick={() => handleOpenEdit(activeNoteModal)}
@@ -858,83 +897,70 @@ export const LibraryView: React.FC<LibraryViewProps> = ({
                         <div className="flex items-center gap-2">
                           <Paperclip className="w-4 h-4 text-indigo-600 dark:text-indigo-400" />
                           <h4 className="text-xs font-bold uppercase tracking-wider text-slate-700 dark:text-slate-300">
-                            Attached Files ({activeNoteModal.attachments.length})
+                            Attached Study Materials ({activeNoteModal.attachments.length})
                           </h4>
                         </div>
                         {isGuest && (
-                          <span className="text-[11px] text-amber-600 dark:text-amber-400 font-semibold flex items-center gap-1">
+                          <span className="text-[11px] text-amber-600 dark:text-amber-400 flex items-center gap-1">
                             <Lock className="w-3 h-3" />
-                            <span>Sign in to download</span>
+                            Sign in to download materials
                           </span>
                         )}
                       </div>
                       <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                         {activeNoteModal.attachments.map((file) => {
-                          const isPdf = file.type === 'application/pdf' || file.name.endsWith('.pdf');
-                          const isImage = (file.type && file.type.startsWith('image/')) || /\.(png|jpe?g|webp|gif|svg)$/i.test(file.name);
+                          const isPdf = file.type === 'application/pdf' || file.name.toLowerCase().endsWith('.pdf');
+                          const fileUrl = file.storageUrl || file.dataUrl;
                           const sizeKb = Math.round(file.size / 1024);
-                          const downloadLink = file.storageUrl || file.dataUrl;
-                          const previewSrc = file.storageUrl || file.dataUrl;
+
                           return (
                             <div
                               key={file.id}
-                              className="lift-card-subtle p-3 rounded-2xl border border-slate-200 dark:border-slate-800 bg-slate-50/70 dark:bg-slate-800/60 flex items-center justify-between gap-3 group hover:border-indigo-300 dark:hover:border-indigo-700 transition"
+                              className="p-3.5 rounded-2xl border border-slate-200 dark:border-slate-800 bg-slate-50/70 dark:bg-slate-800/50 flex flex-col justify-between gap-3 group"
                             >
-                              <div className="flex items-center gap-3 overflow-hidden">
-                                {isImage ? (
-                                  <img
-                                    src={previewSrc}
-                                    alt={file.name}
-                                    className="w-11 h-11 rounded-xl object-cover border border-slate-200 dark:border-slate-700 shrink-0 bg-white"
-                                  />
-                                ) : (
-                                  <div className="w-11 h-11 rounded-xl bg-rose-50 dark:bg-rose-950/60 border border-rose-200 dark:border-rose-900/60 flex items-center justify-center shrink-0">
+                              <div className="flex items-start gap-3">
+                                {isPdf ? (
+                                  <div className="w-10 h-10 rounded-xl bg-rose-50 dark:bg-rose-950/60 border border-rose-200 dark:border-rose-900/60 flex items-center justify-center shrink-0">
                                     <FileText className="w-5 h-5 text-rose-600 dark:text-rose-400" />
+                                  </div>
+                                ) : (
+                                  <div className="w-10 h-10 rounded-xl overflow-hidden border border-slate-200 dark:border-slate-700 shrink-0 bg-white">
+                                    <img
+                                      src={fileUrl}
+                                      alt={file.name}
+                                      className="w-full h-full object-cover"
+                                    />
                                   </div>
                                 )}
                                 <div className="overflow-hidden">
-                                  <p className="text-xs font-bold text-slate-800 dark:text-slate-200 truncate" title={file.name}>
+                                  <p className="text-xs font-bold text-slate-900 dark:text-white truncate">
                                     {file.name}
                                   </p>
-                                  <span className="text-[10px] text-slate-400 dark:text-slate-500 font-medium mt-0.5 block">
-                                    {isPdf ? 'PDF Document' : 'Image Asset'} • {sizeKb} KB
-                                  </span>
+                                  <p className="text-[10px] text-slate-400 dark:text-slate-500 mt-0.5">
+                                    {isPdf ? 'PDF Document' : 'Image File'} • {sizeKb} KB
+                                  </p>
                                 </div>
                               </div>
-                              <div className="flex items-center gap-1.5 shrink-0">
-                                {isImage && (
+                              <div className="flex items-center gap-2 pt-1 border-t border-slate-200/60 dark:border-slate-700/60">
+                                {fileUrl ? (
                                   <a
-                                    href={previewSrc}
+                                    href={fileUrl}
                                     target="_blank"
                                     rel="noreferrer"
-                                    className="px-2.5 py-1.5 rounded-xl text-xs font-semibold text-slate-600 dark:text-slate-300 hover:text-indigo-600 dark:hover:text-indigo-400 hover:bg-white dark:hover:bg-slate-700 transition border border-slate-200/80 dark:border-slate-700 shadow-2xs inline-flex items-center gap-1"
-                                    title="Open image preview"
+                                    className="flex-1 text-center py-1.5 rounded-lg bg-indigo-50 dark:bg-indigo-950/60 text-indigo-700 dark:text-indigo-300 text-xs font-bold hover:bg-indigo-100 dark:hover:bg-indigo-900/60 transition flex items-center justify-center gap-1.5"
                                   >
-                                    <Eye className="w-3.5 h-3.5" />
-                                    <span>View</span>
+                                    <ExternalLink className="w-3.5 h-3.5" />
+                                    <span>Preview</span>
                                   </a>
-                                )}
-                                {isPdf && (
-                                  <a
-                                    href={downloadLink}
-                                    target="_blank"
-                                    rel="noreferrer"
-                                    className="px-2.5 py-1.5 rounded-xl text-xs font-semibold text-slate-600 dark:text-slate-300 hover:text-indigo-600 dark:hover:text-indigo-400 hover:bg-white dark:hover:bg-slate-700 transition border border-slate-200/80 dark:border-slate-700 shadow-2xs inline-flex items-center gap-1"
-                                    title="Open PDF in viewer"
-                                  >
-                                    <Eye className="w-3.5 h-3.5" />
-                                    <span>Open PDF</span>
-                                  </a>
-                                )}
+                                ) : null}
                                 <a
-                                  href={downloadLink}
+                                  href={fileUrl}
                                   download={file.name}
-                                  target="_blank"
-                                  rel="noreferrer"
-                                  className="p-2 rounded-xl text-slate-400 hover:text-indigo-600 dark:hover:text-indigo-400 hover:bg-white dark:hover:bg-slate-700 transition border border-transparent hover:border-slate-200 dark:hover:border-slate-700 shadow-2xs"
-                                  title="Download file"
+                                  onClick={handleDownloadAttempt}
+                                  className="p-1.5 rounded-lg bg-slate-200 dark:bg-slate-700 text-slate-700 dark:text-slate-200 hover:bg-slate-300 dark:hover:bg-slate-600 transition"
+                                  title="Download File"
                                 >
-                                  <Download className="w-4 h-4" />
+                                  <Download className="w-3.5 h-3.5" />
                                 </a>
                               </div>
                             </div>
@@ -943,40 +969,42 @@ export const LibraryView: React.FC<LibraryViewProps> = ({
                       </div>
                     </div>
                   )}
-                  {/* AI Summarize Action */}
-                  <div className="p-4 rounded-2xl bg-indigo-50/60 dark:bg-indigo-950/40 border border-indigo-100 dark:border-indigo-900/50 flex items-center justify-between gap-4">
-                    <div className="space-y-0.5">
-                      <span className="text-xs font-bold text-indigo-900 dark:text-indigo-200 flex items-center gap-1.5">
-                        <Sparkles className="w-3.5 h-3.5 text-indigo-600 dark:text-indigo-400" />
-                        Summarize with Paideutic AI Tutor
-                      </span>
-                      <p className="text-[11px] text-indigo-700 dark:text-indigo-300">
-                        Generate quiz drills and targeted review notes tailored to your weak points.
-                      </p>
-                    </div>
+                  {/* Send to AI Summarizer Action */}
+                  <div className="pt-4 flex items-center justify-between border-t border-slate-100 dark:border-slate-800">
                     <button
                       onClick={() => {
-                        onSummarizeInAi(activeNoteModal.content, activeNoteModal.title, activeNoteModal.subject, activeNoteModal.attachments);
+                        onSummarizeInAi(
+                          activeNoteModal.content,
+                          activeNoteModal.title,
+                          activeNoteModal.subject,
+                          activeNoteModal.attachments
+                        );
                         setActiveNoteModal(null);
                       }}
-                      className="px-3.5 py-2 rounded-xl bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-bold transition shrink-0 shadow-xs flex items-center gap-1.5 cursor-pointer"
+                      className="flex items-center gap-2 px-4 py-2 rounded-xl bg-purple-50 dark:bg-purple-950/60 hover:bg-purple-100 dark:hover:bg-purple-900/60 text-purple-700 dark:text-purple-300 border border-purple-200 dark:border-purple-800 text-xs font-bold transition cursor-pointer"
                     >
-                      <span>Launch in AI</span>
+                      <Sparkles className="w-4 h-4 text-purple-600 dark:text-purple-400" />
+                      <span>Summarize & Tutor with AI</span>
+                    </button>
+                    <button
+                      onClick={() => setActiveNoteModal(null)}
+                      className="px-4 py-2 rounded-xl text-xs font-semibold text-slate-500 hover:text-slate-800 dark:hover:text-slate-200 cursor-pointer"
+                    >
+                      Close Reader
                     </button>
                   </div>
                 </>
               ) : (
-                /* FLASHCARD DRILL VIEW */
-                <div className="flex flex-col items-center justify-center py-8 space-y-6">
+                /* FLASHCARD ACTIVE RECALL VIEW */
+                <div className="flex flex-col items-center justify-center py-6 space-y-6">
                   {activeNoteModal.flashcards && activeNoteModal.flashcards.length > 0 ? (
                     <>
-                      <div className="text-xs text-slate-400 font-bold uppercase tracking-wider">
+                      <div className="text-xs font-bold text-slate-400 uppercase tracking-wider">
                         Card {currentFlashcardIndex + 1} of {activeNoteModal.flashcards.length}
                       </div>
-                      {/* Flashcard Component */}
                       <div
                         onClick={() => setIsCardFlipped(!isCardFlipped)}
-                        className={`w-full max-w-md min-h-[220px] p-6 rounded-3xl border text-center flex flex-col justify-center items-center cursor-pointer transition-all duration-300 transform shadow-md select-none ${
+                        className={`w-full max-w-lg min-h-[220px] p-8 rounded-3xl border transition-all duration-300 flex flex-col justify-center items-center text-center cursor-pointer select-none shadow-sm ${
                           isCardFlipped
                             ? 'bg-indigo-600 text-white border-indigo-500 scale-[1.01]'
                             : 'bg-slate-50 dark:bg-slate-800 text-slate-800 dark:text-slate-100 border-slate-200 dark:border-slate-700 hover:border-indigo-300 dark:hover:border-indigo-700'
@@ -1032,24 +1060,27 @@ export const LibraryView: React.FC<LibraryViewProps> = ({
         </div>
       )}
 
-      {/* PUBLISH STUDY NOTE MODAL */}
+      {/* UPLOAD & PUBLISH STUDY MATERIAL MODAL */}
       {isPublishModalOpen && (
         <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-xs z-50 flex items-center justify-center p-4">
           <div className="bg-white dark:bg-slate-900 rounded-3xl border border-slate-200 dark:border-slate-800 max-w-2xl w-full max-h-[90vh] flex flex-col shadow-2xl p-6 md:p-8 overflow-hidden animate-in fade-in zoom-in-95">
             <div className="flex items-center justify-between pb-4 border-b border-slate-100 dark:border-slate-800">
               <div>
                 <h3 className="text-xl font-bold text-slate-900 dark:text-white">
-                  {editingNoteId ? 'Edit Study Material' : 'Publish Study Note'}
+                  {editingNoteId ? 'Edit Study Material' : 'Upload & Publish Material'}
                 </h3>
                 <p className="text-xs text-slate-500 dark:text-slate-400">
                   {editingNoteId
-                    ? 'Update the details, subject, or attachments for this study resource.'
-                    : 'Share course notes, formulas, and diagrams with fellow students.'}
+                    ? 'Update the title, subject, notes, or attachments for this study resource.'
+                    : 'Select files, edit details, and upload to the shared study library.'}
                 </p>
               </div>
               <button
-                onClick={() => setIsPublishModalOpen(false)}
-                className="text-slate-400 hover:text-slate-700 dark:hover:text-slate-200 font-bold text-xl cursor-pointer"
+                onClick={() => {
+                  if (!isSubmitting) setIsPublishModalOpen(false);
+                }}
+                disabled={isSubmitting}
+                className="text-slate-400 hover:text-slate-700 dark:hover:text-slate-200 font-bold text-xl cursor-pointer disabled:opacity-30"
               >
                 ✕
               </button>
@@ -1057,12 +1088,12 @@ export const LibraryView: React.FC<LibraryViewProps> = ({
             <form onSubmit={handlePublishSubmit} className="space-y-4 pt-4 overflow-y-auto flex-1 pr-1">
               <div>
                 <label className="text-xs font-bold text-slate-700 dark:text-slate-300 block mb-1">
-                  Note Title *
+                  Material Title *
                 </label>
                 <input
                   type="text"
                   required
-                  placeholder="e.g. Maxwell's Equations & Boundary Conditions Cheat Sheet"
+                  placeholder="e.g. Cell Biology & Lysosomes Summary"
                   value={pubTitle}
                   onChange={(e) => setPubTitle(e.target.value)}
                   className="w-full px-3.5 py-2 rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-900 dark:text-slate-100 text-sm outline-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500"
@@ -1087,7 +1118,7 @@ export const LibraryView: React.FC<LibraryViewProps> = ({
               <div>
                 <div className="flex items-center justify-between mb-1">
                   <label className="text-xs font-bold text-slate-700 dark:text-slate-300">
-                    Content & Notes (Markdown supported) *
+                    Content & Study Notes (Markdown supported) *
                   </label>
                   <button
                     type="button"
@@ -1100,49 +1131,50 @@ export const LibraryView: React.FC<LibraryViewProps> = ({
                   </button>
                 </div>
                 <textarea
-                  rows={5}
+                  rows={4}
                   required
-                  placeholder="# Key Formulas&#10;- Point 1: ...&#10;- Core Theorem: ..."
+                  placeholder="# Key Points&#10;- Main concept: ...&#10;- Summary formulas: ..."
                   value={pubContent}
                   onChange={(e) => setPubContent(e.target.value)}
                   className="w-full px-3.5 py-2.5 rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-900 dark:text-slate-100 text-xs outline-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500 font-mono resize-none"
                 />
               </div>
-              {/* File Attachments (PDF, Images) Section */}
+
+              {/* Supporting File Attachments Section */}
               <div className="space-y-2 pt-1">
                 <div className="flex items-center justify-between">
                   <label className="text-xs font-bold text-slate-700 dark:text-slate-300 flex items-center gap-1.5">
                     <Paperclip className="w-3.5 h-3.5 text-indigo-600 dark:text-indigo-400" />
-                    <span>Attach Supporting Files (PDFs & Images)</span>
+                    <span>Selected Files & Attachments</span>
                   </label>
-                  <span className="text-[10px] text-slate-400 dark:text-slate-500">Max 25MB each</span>
+                  <span className="text-[10px] text-slate-400 dark:text-slate-500">Max 50MB each</span>
                 </div>
-                {/* Upload Trigger Area */}
+                {/* File Dropzone Trigger */}
                 <div
-                  onClick={() => fileInputRef.current?.click()}
+                  onClick={() => modalFileInputRef.current?.click()}
                   className="p-4 border-2 border-dashed border-slate-200 dark:border-slate-700 hover:border-indigo-400 dark:hover:border-indigo-600 rounded-2xl bg-slate-50/50 dark:bg-slate-800/50 flex flex-col items-center justify-center cursor-pointer transition text-center group"
                 >
-                  <Upload className={`w-5 h-5 text-indigo-500 group-hover:scale-110 transition-transform mb-1.5 ${isUploadingAttachment ? 'animate-bounce' : ''}`} />
+                  <Upload className="w-5 h-5 text-indigo-500 group-hover:scale-110 transition-transform mb-1.5" />
                   <p className="text-xs font-semibold text-slate-700 dark:text-slate-300">
-                    {isUploadingAttachment ? 'Uploading attachment...' : 'Click to browse or drop PDF lecture slides & diagram images'}
+                    Click to select PDF notes, diagrams, slides, or documents
                   </p>
                   <p className="text-[10px] text-slate-400 dark:text-slate-500 mt-0.5">
-                    Supports .pdf, .png, .jpg, .jpeg, .webp
+                    Files are staged locally and will upload when you press Publish below.
                   </p>
                 </div>
                 <input
                   type="file"
-                  ref={fileInputRef}
-                  onChange={handleFileUpload}
+                  ref={modalFileInputRef}
+                  onChange={handleStageFiles}
                   multiple
-                  accept="application/pdf, image/png, image/jpeg, image/webp"
+                  accept=".pdf,.png,.jpg,.jpeg,.webp,.gif,.txt,.md,.docx,.pptx"
                   className="hidden"
                 />
-                {/* Attached Files List */}
-                {pubAttachments.length > 0 && (
+                {/* Staged Attachments List */}
+                {stagedAttachments.length > 0 && (
                   <div className="space-y-2 pt-1">
-                    {pubAttachments.map((file) => {
-                      const isPdf = file.type === 'application/pdf' || file.name.endsWith('.pdf');
+                    {stagedAttachments.map((file) => {
+                      const isPdf = file.type === 'application/pdf' || file.name.toLowerCase().endsWith('.pdf');
                       const sizeKb = Math.round(file.size / 1024);
                       return (
                         <div
@@ -1156,7 +1188,7 @@ export const LibraryView: React.FC<LibraryViewProps> = ({
                               </div>
                             ) : (
                               <img
-                                src={file.dataUrl}
+                                src={file.previewUrl}
                                 alt={file.name}
                                 className="w-8 h-8 rounded-lg object-cover border border-slate-200 dark:border-slate-700 shrink-0 bg-white"
                               />
@@ -1166,13 +1198,13 @@ export const LibraryView: React.FC<LibraryViewProps> = ({
                                 {file.name}
                               </p>
                               <span className="text-[10px] text-slate-400 dark:text-slate-500 mt-0.5 block">
-                                {isPdf ? 'PDF' : 'Image'} • {sizeKb} KB
+                                {isPdf ? 'PDF' : 'Image'} • {sizeKb} KB {file.file ? '(Ready to upload)' : '(Uploaded)'}
                               </span>
                             </div>
                           </div>
                           <button
                             type="button"
-                            onClick={() => handleRemoveAttachment(file.id)}
+                            onClick={() => handleRemoveStagedAttachment(file.id)}
                             className="p-1.5 rounded-lg text-slate-400 hover:text-rose-600 dark:hover:text-rose-400 hover:bg-rose-50 dark:hover:bg-rose-950/40 transition cursor-pointer"
                             title="Remove attachment"
                           >
@@ -1184,7 +1216,8 @@ export const LibraryView: React.FC<LibraryViewProps> = ({
                   </div>
                 )}
               </div>
-              {/* Flashcards Preview inside form */}
+
+              {/* Flashcards Preview */}
               {pubFlashcards.length > 0 && (
                 <div className="p-3 rounded-xl bg-purple-50 dark:bg-purple-950/40 border border-purple-200 dark:border-purple-800/60 space-y-2">
                   <span className="text-xs font-bold text-purple-900 dark:text-purple-200 flex items-center gap-1.5">
@@ -1200,12 +1233,22 @@ export const LibraryView: React.FC<LibraryViewProps> = ({
                   </div>
                 </div>
               )}
+
+              {/* Submit Progress Feedback */}
+              {isSubmitting && submitProgressText && (
+                <div className="p-2.5 rounded-xl bg-indigo-50 dark:bg-indigo-950/80 border border-indigo-200 dark:border-indigo-800 text-indigo-700 dark:text-indigo-300 text-xs font-semibold flex items-center gap-2">
+                  <RefreshCw className="w-3.5 h-3.5 animate-spin text-indigo-600" />
+                  <span>{submitProgressText}</span>
+                </div>
+              )}
+
               {/* Form Actions */}
               <div className="pt-3 border-t border-slate-100 dark:border-slate-800 flex items-center justify-end gap-3">
                 <button
                   type="button"
+                  disabled={isSubmitting}
                   onClick={() => setIsPublishModalOpen(false)}
-                  className="px-4 py-2 rounded-xl border border-slate-200 dark:border-slate-700 text-xs font-semibold text-slate-700 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-800 transition cursor-pointer"
+                  className="px-4 py-2 rounded-xl border border-slate-200 dark:border-slate-700 text-xs font-semibold text-slate-700 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-800 transition cursor-pointer disabled:opacity-40"
                 >
                   Cancel
                 </button>
@@ -1215,7 +1258,7 @@ export const LibraryView: React.FC<LibraryViewProps> = ({
                   className="px-5 py-2 rounded-xl bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-bold transition shadow-xs cursor-pointer disabled:opacity-50 flex items-center gap-2"
                 >
                   {isSubmitting && <RefreshCw className="w-3.5 h-3.5 animate-spin" />}
-                  <span>{editingNoteId ? 'Save Changes' : 'Publish Note'}</span>
+                  <span>{editingNoteId ? 'Save Changes' : 'Upload & Publish Material'}</span>
                 </button>
               </div>
             </form>
@@ -1237,70 +1280,98 @@ export const LibraryView: React.FC<LibraryViewProps> = ({
               </div>
             </div>
             <p className="text-xs text-slate-600 dark:text-slate-300 leading-relaxed">
-              Are you sure you want to delete <span className="font-bold text-slate-900 dark:text-white">"{noteToDelete.title}"</span>? It will be removed from the shared library for all users.
+              Are you sure you want to delete <span className="font-bold text-slate-900 dark:text-white">"{noteToDelete.title}"</span>? It will be removed from the library and storage for all users.
             </p>
             <div className="flex items-center justify-end gap-2 pt-2">
               <button
                 disabled={isDeleting}
                 onClick={() => setNoteToDelete(null)}
-                className="px-4 py-2 rounded-xl border border-slate-200 dark:border-slate-700 text-xs font-semibold text-slate-700 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-800 transition cursor-pointer"
+                className="px-4 py-2 rounded-xl border border-slate-200 dark:border-slate-700 text-xs font-semibold text-slate-700 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-800 transition cursor-pointer disabled:opacity-40"
               >
                 Cancel
               </button>
               <button
                 disabled={isDeleting}
                 onClick={handleConfirmDelete}
-                className="px-4 py-2 rounded-xl bg-rose-600 hover:bg-rose-700 text-white text-xs font-bold transition shadow-xs flex items-center gap-1.5 cursor-pointer disabled:opacity-50"
+                className="px-4 py-2 rounded-xl bg-rose-600 hover:bg-rose-700 text-white text-xs font-bold transition cursor-pointer disabled:opacity-50 flex items-center gap-1.5"
               >
-                {isDeleting ? 'Deleting...' : 'Confirm Delete'}
+                {isDeleting && <RefreshCw className="w-3.5 h-3.5 animate-spin" />}
+                <span>{isDeleting ? 'Deleting...' : 'Confirm Delete'}</span>
               </button>
             </div>
           </div>
         </div>
       )}
 
-      {/* GUEST LIMITATION / AUTH MODAL */}
-      {(showPreviewLimitModal || authRequiredReason) && (
+      {/* GUEST PREVIEW LIMIT MODAL */}
+      {showPreviewLimitModal && (
         <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-xs z-50 flex items-center justify-center p-4">
-          <div className="bg-white dark:bg-slate-900 rounded-3xl border border-slate-200 dark:border-slate-800 max-w-md w-full p-6 shadow-2xl space-y-4 animate-in fade-in zoom-in-95">
-            <div className="flex items-center gap-3 text-indigo-600 dark:text-indigo-400">
-              <div className="w-10 h-10 rounded-2xl bg-indigo-50 dark:bg-indigo-950/60 border border-indigo-200 dark:border-indigo-900/60 flex items-center justify-center shrink-0">
-                <UserCheck className="w-5 h-5" />
-              </div>
-              <div>
-                <h3 className="text-base font-bold text-slate-900 dark:text-white">Sign In Required</h3>
-                <p className="text-xs text-slate-500 dark:text-slate-400">Unlock full access to Paideutic Library</p>
-              </div>
+          <div className="bg-white dark:bg-slate-900 rounded-3xl border border-slate-200 dark:border-slate-800 max-w-sm w-full p-6 text-center shadow-2xl space-y-4 animate-in fade-in zoom-in-95">
+            <div className="w-12 h-12 rounded-2xl bg-indigo-50 dark:bg-indigo-950/60 border border-indigo-200 dark:border-indigo-900/60 flex items-center justify-center mx-auto text-indigo-600 dark:text-indigo-400">
+              <Lock className="w-6 h-6" />
             </div>
-            <p className="text-xs text-slate-600 dark:text-slate-300 leading-relaxed">
-              {showPreviewLimitModal
-                ? 'Guest accounts can view a maximum of 3 shared study materials. Sign in or create a free account to unlock unlimited access to all notes, flashcard decks, and attachments.'
-                : authRequiredReason === 'upload'
-                ? 'Sign in or create a free account to publish notes, upload study materials, and share resources with fellow students.'
-                : 'Sign in or create a free account to download shared PDF documents, images, and study attachments.'}
-            </p>
-            <div className="flex items-center justify-end gap-2 pt-2">
+            <div className="space-y-1">
+              <h3 className="text-lg font-bold text-slate-900 dark:text-white">
+                Guest Limit Reached
+              </h3>
+              <p className="text-xs text-slate-500 dark:text-slate-400 leading-relaxed">
+                You have previewed your 3 free study materials in guest mode. Create a free scholar account to unlock unlimited access.
+              </p>
+            </div>
+            <div className="space-y-2 pt-2">
               <button
                 onClick={() => {
                   setShowPreviewLimitModal(false);
-                  setAuthRequiredReason(null);
+                  if (onOpenAuth) onOpenAuth('signup');
                 }}
-                className="px-4 py-2 rounded-xl border border-slate-200 dark:border-slate-700 text-xs font-semibold text-slate-700 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-800 transition cursor-pointer"
+                className="w-full py-2.5 rounded-xl bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-bold transition shadow-xs cursor-pointer"
               >
-                Close
+                Create Free Scholar Account
               </button>
-              {onOpenAuth && (
-                <button
-                  onClick={() => {
-                    setShowPreviewLimitModal(false);
-                    setAuthRequiredReason(null);
-                    onOpenAuth('signin');
-                  }}
-                  className="px-4 py-2 rounded-xl bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-bold transition shadow-xs cursor-pointer"
-                >
-                  Sign In / Register
-                </button>
-              )}
+              <button
+                onClick={() => setShowPreviewLimitModal(false)}
+                className="w-full py-2 text-xs font-semibold text-slate-500 hover:text-slate-700 dark:hover:text-slate-300 cursor-pointer"
+              >
+                Continue Browsing
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* AUTH REQUIRED PROMPT MODAL */}
+      {authRequiredReason && (
+        <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-xs z-50 flex items-center justify-center p-4">
+          <div className="bg-white dark:bg-slate-900 rounded-3xl border border-slate-200 dark:border-slate-800 max-w-sm w-full p-6 text-center shadow-2xl space-y-4 animate-in fade-in zoom-in-95">
+            <div className="w-12 h-12 rounded-2xl bg-amber-50 dark:bg-amber-950/60 border border-amber-200 dark:border-amber-900/60 flex items-center justify-center mx-auto text-amber-600 dark:text-amber-400">
+              <UserCheck className="w-6 h-6" />
+            </div>
+            <div className="space-y-1">
+              <h3 className="text-lg font-bold text-slate-900 dark:text-white">
+                Scholar Sign-In Required
+              </h3>
+              <p className="text-xs text-slate-500 dark:text-slate-400 leading-relaxed">
+                {authRequiredReason === 'upload'
+                  ? 'Sign in to share notes, upload slide materials, and earn contributor badges.'
+                  : 'Sign in to download materials and full lecture slide packages.'}
+              </p>
+            </div>
+            <div className="space-y-2 pt-2">
+              <button
+                onClick={() => {
+                  setAuthRequiredReason(null);
+                  if (onOpenAuth) onOpenAuth('signin');
+                }}
+                className="w-full py-2.5 rounded-xl bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-bold transition shadow-xs cursor-pointer"
+              >
+                Sign In to Paideutic
+              </button>
+              <button
+                onClick={() => setAuthRequiredReason(null)}
+                className="w-full py-2 text-xs font-semibold text-slate-500 hover:text-slate-700 dark:hover:text-slate-300 cursor-pointer"
+              >
+                Cancel
+              </button>
             </div>
           </div>
         </div>

@@ -1090,12 +1090,12 @@ app.delete("/api/notes/:id", async (req: Request, res: Response) => {
 
     if (target && Array.isArray(target.attachments)) {
       for (const att of target.attachments) {
-        if (att.name && !registry.deleted_files.includes(att.name)) {
-          registry.deleted_files.push(att.name);
-        }
         if (att.storageUrl && att.storageUrl.startsWith("/api/uploads/")) {
           try {
             const diskFilename = path.basename(att.storageUrl);
+            if (diskFilename && !registry.deleted_files.includes(diskFilename)) {
+              registry.deleted_files.push(diskFilename);
+            }
             const diskPath = path.join(UPLOADS_DIR, diskFilename);
             if (fs.existsSync(diskPath)) {
               fs.unlinkSync(diskPath);
@@ -1105,13 +1105,13 @@ app.delete("/api/notes/:id", async (req: Request, res: Response) => {
           }
         }
         if (att.supabasePath) {
-          const fname = att.supabasePath.split("/").pop();
+          const fname = path.basename(att.supabasePath);
           if (fname && !registry.deleted_files.includes(fname)) {
             registry.deleted_files.push(fname);
           }
           if (supabase) {
             try {
-              await supabase.storage.from("Material Library").remove([att.supabasePath]);
+              await supabase.storage.from("Material Library").remove([att.supabasePath, fname, `Uploaded Material/${fname}`]);
             } catch (e) {
               console.warn("Supabase remove warning:", e);
             }
