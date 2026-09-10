@@ -15,7 +15,9 @@ import {
   RefreshCw,
   Trash2,
   RotateCcw,
-  X
+  X,
+  Globe,
+  ExternalLink
 } from 'lucide-react';
 import ReactMarkdown from 'react-markdown';
 import { ChatMessage, AdaptiveSummaryResult, PracticeQuestion, Subject, AttachedFile } from '../types';
@@ -273,6 +275,8 @@ export const AiTutorView: React.FC<AiTutorViewProps> = ({
         timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
         detectedWeakness: res.detectedWeakness,
         suggestedFollowUps: res.suggestedFollowUps,
+        searchedWeb: res.searchedWeb,
+        sources: res.sources,
       };
 
       // If weak point detected, automatically add to user profile if valid concept name
@@ -478,6 +482,31 @@ export const AiTutorView: React.FC<AiTutorViewProps> = ({
                     <div className="prose prose-slate dark:prose-invert max-w-none prose-sm">
                       <ReactMarkdown>{msg.text}</ReactMarkdown>
                     </div>
+
+                    {/* Web Search Knowledge Source Citation Banner */}
+                    {msg.sources && msg.sources.length > 0 && (
+                      <div className="mt-3.5 pt-3 border-t border-slate-200/70 dark:border-slate-700/70 space-y-2">
+                        <div className="flex items-center gap-1.5 text-[11px] font-bold text-indigo-700 dark:text-indigo-400">
+                          <Globe className="w-3.5 h-3.5 text-indigo-600 dark:text-indigo-400 shrink-0" />
+                          <span>Web Search Grounding</span>
+                        </div>
+                        <div className="flex flex-wrap gap-1.5">
+                          {msg.sources.map((src, sIdx) => (
+                            <a
+                              key={sIdx}
+                              href={src.url}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              className="inline-flex items-center gap-1 text-[11px] px-2.5 py-1 rounded-lg bg-indigo-50 dark:bg-indigo-950/60 border border-indigo-200 dark:border-indigo-800/80 text-indigo-800 dark:text-indigo-300 hover:bg-indigo-100 dark:hover:bg-indigo-900 transition font-medium"
+                              title={src.snippet || src.title}
+                            >
+                              <span>{src.title}</span>
+                              <ExternalLink className="w-2.5 h-2.5 opacity-70" />
+                            </a>
+                          ))}
+                        </div>
+                      </div>
+                    )}
 
                     {/* Weak Point Detection Alert Banner */}
                     {msg.detectedWeakness && (

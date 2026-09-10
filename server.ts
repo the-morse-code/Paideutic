@@ -5,6 +5,7 @@ import dotenv from "dotenv";
 import { createClient } from "@supabase/supabase-js";
 import { GoogleGenAI, Type } from "@google/genai";
 import { createServer as createViteServer } from "vite";
+import { resolveAcademicQuery, resolveAcademicQueryWithWebSearch } from "./src/services/academicKnowledge";
 
 dotenv.config();
 
@@ -118,226 +119,10 @@ function cleanAndParseJson(text: string): any {
 }
 
 // -------------------------------------------------------------
-// INTELLIGENT ACADEMIC FALLBACK ENGINE (Direct pedagogical answers)
+// INTELLIGENT ACADEMIC KNOWLEDGE ENGINE WITH LIVE WEB SEARCH
 // -------------------------------------------------------------
-function generateLocalChatFallback(message: string, currentWeakTopics: string[] = []) {
-  const queryLower = message.toLowerCase().trim();
-
-  // Guardrail for off-topic, harmful, or non-academic queries
-  const offTopicKeywords = [
-    'joke', 'game', 'play', 'movie', 'song', 'weather', 'gossip',
-    'recipe', 'pizza', 'crypto', 'bitcoin', 'password', 'hack', 'sport'
-  ];
-  const isOffTopic = offTopicKeywords.some((kw) => queryLower.includes(kw)) &&
-    !queryLower.includes('math') && !queryLower.includes('science') && !queryLower.includes('physics') && !queryLower.includes('chemistry');
-
-  if (isOffTopic) {
-    return {
-      answer: "I am your Academic AI Tutor. I can only assist with educational subjects, concepts, and study materials.",
-      detectedWeakness: null,
-      encouragement: "Let's keep our focus on your learning goals!",
-      suggestedFollowUps: [
-        "Ask me a question about math, science, or literature",
-        "Help me understand a topic from my course notes"
-      ]
-    };
-  }
-
-  // 1. Math calculation pattern (e.g., "what is 3 + 2", "3+2", "calculate 15 * 4", "100 / 4")
-  const mathMatch = message.match(/(?:what\s+is\s+|calculate\s+|compute\s+)?(\d+(?:\.\d+)?)\s*([\+\-\*\/x×÷\^])\s*(\d+(?:\.\d+)?)/i);
-  if (mathMatch) {
-    const num1 = parseFloat(mathMatch[1]);
-    const op = mathMatch[2].toLowerCase();
-    const num2 = parseFloat(mathMatch[3]);
-    let result: number | null = null;
-    let opSymbol = op;
-    if (op === '+') { result = num1 + num2; opSymbol = '+'; }
-    else if (op === '-') { result = num1 - num2; opSymbol = '-'; }
-    else if (op === '*' || op === 'x' || op === '×') { result = num1 * num2; opSymbol = '×'; }
-    else if (op === '/' || op === '÷') { result = num2 !== 0 ? num1 / num2 : null; opSymbol = '÷'; }
-    else if (op === '^') { result = Math.pow(num1, num2); opSymbol = '^'; }
-
-    if (result !== null) {
-      const cleanRes = Number.isInteger(result) ? result.toString() : result.toFixed(2);
-      return {
-        answer: `${num1} ${opSymbol} ${num2} = **${cleanRes}**`,
-        detectedWeakness: null,
-        encouragement: "Quick arithmetic down pat! Keep up the momentum.",
-        suggestedFollowUps: [
-          `Can you explain how this applies in algebraic equations?`,
-          `Give me a practice problem using this operation.`
-        ]
-      };
-    }
-  }
-
-  // 2. Extract struggle topics directly (e.g., "I'm struggling with X", "I don't understand X", "help me with X")
-  const struggleMatch = message.match(/(?:struggling with|confused about|help (?:me )?with|trouble with|understand)\s+([A-Za-z0-9\s-]{3,35})/i);
-  let extractedTopic: string | null = null;
-  if (struggleMatch && struggleMatch[1]) {
-    const rawMatch = struggleMatch[1].trim().replace(/[?.!,]+$/, '');
-    const isQuestionWord = /^(what|how|why|can|could|tell|explain|is|does|where|when|which|show)\b/i.test(rawMatch);
-    if (!isQuestionWord && rawMatch.split(/\s+/).length <= 4) {
-      extractedTopic = rawMatch.replace(/\b\w/g, (c) => c.toUpperCase());
-    }
-  }
-
-  // Factual & Symbolic Lookups (direct, concise answers)
-  if (queryLower.includes('sodium') || queryLower.includes('symbol of sodium')) {
-    return {
-      answer: "The chemical symbol for **Sodium** is **Na** (atomic number 11), derived from the Latin word *natrium*.",
-      detectedWeakness: queryLower.includes('struggle') || queryLower.includes('confused') ? 'Chemical Symbols' : null,
-      encouragement: "Quick factual recall builds a strong foundation for chemistry!",
-      suggestedFollowUps: [
-        "What is the electron configuration of Sodium?",
-        "Why is Sodium highly reactive with water?"
-      ]
-    };
-  }
-
-  if (queryLower.includes('trigonometry') || queryLower.includes('trig identities') || queryLower.includes('trigonometric identities')) {
-    const isStruggling = queryLower.includes('struggle') || queryLower.includes('confused') || queryLower.includes('help');
-    return {
-      answer: `### Core Trigonometric Identities
-
-- **Pythagorean Identity**: $\\sin^2\\theta + \\cos^2\\theta = 1$
-- **Tangent Identity**: $\\tan\\theta = \\frac{\\sin\\theta}{\\cos\\theta}$
-- **Double Angle Formulas**:
-  - $\\sin(2\\theta) = 2\\sin\\theta\\cos\\theta$
-  - $\\cos(2\\theta) = \\cos^2\\theta - \\sin^2\\theta$`,
-      detectedWeakness: isStruggling ? 'Trigonometric Identities' : (extractedTopic || null),
-      encouragement: "Mastering these core identities makes calculus trigonometric substitution much easier!",
-      suggestedFollowUps: [
-        "How do I use double-angle formulas in calculus integrals?",
-        "Can you show a proof for the Pythagorean identity?"
-      ]
-    };
-  }
-
-  // Lysosomes / Suicidal Bags of the Cell
-  if (queryLower.includes('suicid') || queryLower.includes('lysosome')) {
-    return {
-      answer: `### Lysosomes: The "Suicidal Bags" of the Cell
-
-**Lysosomes** are membrane-bound cellular organelles known as the **"suicidal bags"** (or digestive bags) of the cell.
-
-#### Why are they called suicidal bags?
-1. **Hydrolytic Digestive Enzymes**: Lysosomes contain powerful hydrolytic enzymes (such as *proteases, lipases, nucleases, and carbohydrases*) capable of digesting all macromolecules and cellular components.
-2. **Acidic Environment**: These enzymes function optimally at an acidic pH ($\\approx 4.5 - 5.0$), maintained by active proton pumps ($H^+$-ATPases) in the lysosomal membrane.
-3. **Autolysis & Apoptosis**: When a cell is severely damaged, aged, infected, or undergoes programmed cell death, the lysosomes rupture and release these hydrolytic enzymes directly into the cytoplasm. The enzymes digest the cell's own components, causing the cell to break down (**autolysis**).
-
-#### Key Functions:
-- **Autophagy**: Degrading and recycling worn-out cellular organelles (e.g., old mitochondria).
-- **Heterophagy**: Destroying foreign bacteria, viruses, and antigens engulfed by phagocytosis.
-- **Metamorphosis**: Assisting developmental tissue remodeling (e.g., tail resorption in tadpoles).`,
-      detectedWeakness: extractedTopic || (queryLower.includes('struggle') ? 'Cell Organelles' : null),
-      encouragement: 'Understanding cellular organelles and their enzyme functions is a core milestone in biology!',
-      suggestedFollowUps: [
-        "What is the difference between autophagy and heterophagy?",
-        "Why don't lysosomal enzymes digest the cell under normal conditions?",
-        "How do proton pumps maintain the acidic pH inside lysosomes?"
-      ]
-    };
-  }
-
-  // Ribosomes / Protein Factories
-  if (queryLower.includes('ribosome') || queryLower.includes('protein synthesis') || queryLower.includes('translation')) {
-    return {
-      answer: `### Ribosomes: The "Protein Factories of the Cell"
-
-**Ribosomes** are ribonucleoprotein complexes (composed of ribosomal RNA and proteins) that perform **translation** (protein synthesis).
-
-- **Prokaryotes**: 70S ribosomes (50S large subunit + 30S small subunit).
-- **Eukaryotes**: 80S ribosomes (60S large subunit + 40S small subunit).
-- **Site of Action**: Free in the cytoplasm (synthesizing intracellular proteins) or bound to the **Rough Endoplasmic Reticulum (RER)** (synthesizing membrane and secretable proteins).
-- **Mechanism**: Reads mRNA codons in the $5' \\to 3'$ direction and links corresponding amino acids via peptide bonds.`,
-      detectedWeakness: extractedTopic || (queryLower.includes('struggle') ? 'Molecular Genetics' : null),
-      encouragement: "Understanding translation connects molecular biology directly to cell structure!",
-      suggestedFollowUps: [
-        "How do the A, P, and E sites in the ribosome coordinate tRNA movement?",
-        "What are the initiation, elongation, and termination steps in translation?"
-      ]
-    };
-  }
-
-  if (queryLower.includes('powerhouse') || queryLower.includes('mitochondri')) {
-    const isStruggling = queryLower.includes('struggle') || queryLower.includes('confused') || queryLower.includes('help');
-    return {
-      answer: "The **mitochondrion** is known as the powerhouse of the cell because its primary role is generating **ATP** (Adenosine Triphosphate) through cellular respiration.",
-      detectedWeakness: isStruggling ? 'Cellular Respiration' : (extractedTopic || null),
-      encouragement: "Connecting cell structures to energetic functions is fundamental in biology!",
-      suggestedFollowUps: [
-        "How do the inner cristae folds increase ATP production?",
-        "What happens during the Krebs cycle in the mitochondrial matrix?"
-      ]
-    };
-  }
-
-  if (queryLower.includes('calvin') || queryLower.includes('photosynthesis')) {
-    const isStruggling = queryLower.includes('struggle') || queryLower.includes('confused') || queryLower.includes('help');
-    return {
-      answer: "The **Calvin Cycle** occurs in the chloroplast stroma, using ATP and NADPH from the light reactions to fix CO₂ into G3P (Glyceraldehyde-3-phosphate).",
-      detectedWeakness: isStruggling ? 'Photosynthesis' : (extractedTopic || null),
-      encouragement: "Understanding carbon fixation is key for plant biology exams!",
-      suggestedFollowUps: [
-        "What role does the RuBisCO enzyme play in carbon fixation?",
-        "How many ATP and NADPH molecules are required per glucose molecule?"
-      ]
-    };
-  }
-
-  if (queryLower.includes('integration by parts') || queryLower.includes('by parts')) {
-    const isStruggling = queryLower.includes('struggle') || queryLower.includes('confused') || queryLower.includes('help');
-    return {
-      answer: `### Integration by Parts
-
-Formula:
-$$\\int u \\, dv = u v - \\int v \\, du$$
-
-Use the **LIATE** rule to choose $u$:
-1. **L**ogarithmic ($\n\\ln x$)
-2. **I**nverse Trigonometric ($\n\\arcsin x$)
-3. **A**lgebraic ($x^2$)
-4. **T**rigonometric ($\n\\sin x$)
-5. **E**xponential ($e^x$)`,
-      detectedWeakness: isStruggling ? 'Integration by Parts' : (extractedTopic || null),
-      encouragement: "Practicing the LIATE choice prevents calculus integration mistakes!",
-      suggestedFollowUps: [
-        "Show me a worked example using the LIATE rule",
-        "When should I use the Tabular Method for integration by parts?"
-      ]
-    };
-  }
-
-  if (queryLower.includes('avl') || queryLower.includes('tree rotation')) {
-    const isStruggling = queryLower.includes('struggle') || queryLower.includes('confused') || queryLower.includes('help');
-    return {
-      answer: "An **AVL tree** is a self-balancing binary search tree where the height difference (balance factor) between left and right subtrees for any node is at most 1.",
-      detectedWeakness: isStruggling ? 'AVL Tree Rotations' : (extractedTopic || null),
-      encouragement: "Data structure balancing guarantees O(log n) efficiency!",
-      suggestedFollowUps: [
-        "What are the four types of AVL tree rotations?",
-        "How do you calculate the balance factor of a node?"
-      ]
-    };
-  }
-
-  // Direct, concise answer for standard academic questions
-  const cleanMsg = message.trim();
-  return {
-    answer: `### Academic Insight: ${cleanMsg}
-
-#### Core Definitions & Key Principles:
-- **Conceptual Definition**: Break down the foundational terminology, governing laws, and underlying physical/biological mechanisms.
-- **Governing Relationships**: Identify standard formulas, conservation principles, and boundary conditions that apply to this subject.
-- **Exam Strategy**: Always verify units, state explicit assumptions, and test corner cases (such as $t=0$, limits at infinity, or neutral conditions).`,
-    detectedWeakness: extractedTopic,
-    encouragement: "Active inquiry is the fastest path to deep academic comprehension!",
-    suggestedFollowUps: [
-      `Could you provide a worked step-by-step example on ${cleanMsg}?`,
-      `What are the most common exam traps on this topic?`
-    ]
-  };
+async function generateLocalChatFallback(message: string, currentWeakTopics: string[] = []) {
+  return await resolveAcademicQueryWithWebSearch(message, currentWeakTopics);
 }
 
 // Substantive text-driven summarizer: extracts real sentences and creates authentic quiz questions directly from user content
@@ -458,16 +243,9 @@ app.post("/api/ai/chat", async (req: Request, res: Response) => {
 
     const ai = getGeminiAI();
     if (!ai) {
-      // Graceful fallback for offline / mock testing
-      return res.json({
-        answer: `I am ready to help you with your studies! To enable live Gemini AI responses, ensure GEMINI_API_KEY is configured in your Secrets panel.\n\nRegarding **${message}**: Focus on breaking down the core theorem, identifying boundary conditions, and testing with a concrete numerical example.`,
-        detectedWeakness: null,
-        encouragement: "Keep asking questions — active inquiry accelerates deep retention!",
-        suggestedFollowUps: [
-          "Could you give a step-by-step example?",
-          "What are the most common student pitfalls here?",
-        ],
-      });
+      // Direct pedagogical answer from Academic Knowledge Engine with Live Web Search
+      const answerData = await resolveAcademicQueryWithWebSearch(message, currentWeakTopics);
+      return res.json(answerData);
     }
 
     const systemInstruction = `You are Paideutic AI, an expert academic study tutor and adaptive learning coach.
@@ -540,8 +318,8 @@ Provide a pedagogically sound response strictly following the system instruction
     return res.json(parsedData);
   } catch (error: any) {
     console.warn("Notice: Live Gemini call encountered error, using adaptive local fallback:", error?.message || error);
-    // Intelligent fallback so user never experiences an outage or error
-    const fallback = generateLocalChatFallback(req.body?.message || "", req.body?.currentWeakTopics || []);
+    // Intelligent fallback with Live Web Search so user never experiences an outage or error
+    const fallback = await generateLocalChatFallback(req.body?.message || "", req.body?.currentWeakTopics || []);
     return res.json(fallback);
   }
 });

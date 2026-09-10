@@ -105,6 +105,12 @@ export interface UserBadge {
   awarded_at?: string;
 }
 
+export interface WebSearchSource {
+  title: string;
+  url: string;
+  snippet?: string;
+}
+
 export interface ChatMessage {
   id: string;
   sender: 'user' | 'ai';
@@ -113,6 +119,8 @@ export interface ChatMessage {
   detectedWeakness?: string | null;
   suggestedFollowUps?: string[];
   isWeaknessSaved?: boolean;
+  searchedWeb?: boolean;
+  sources?: WebSearchSource[];
 }
 
 export interface PracticeQuestion {
