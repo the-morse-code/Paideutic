@@ -26,7 +26,7 @@ import ReactMarkdown from 'react-markdown';
 import { SharedNote, Subject, Flashcard, AttachedFile } from '../types';
 import { extractFlashcards } from '../services/geminiService';
 import { uploadMaterialToBucket } from '../services/supabaseStorage';
-import { StorageService } from '../services/storage';
+import { StorageService, getMyNoteIds, addMyNoteId, removeMyNoteId } from '../services/storage';
 
 interface LibraryViewProps {
   notes: SharedNote[];

@@ -1314,6 +1314,11 @@ export const StorageService = {
   incrementNoteView: incrementNoteView,
   deleteSharedNote: deleteSharedNote,
   deleteNote: deleteSharedNote,
+  getMyNoteIds: getMyNoteIds,
+  addMyNoteId: addMyNoteId,
+  removeMyNoteId: removeMyNoteId,
+  getDeletedNoteIds: getDeletedNoteIds,
+  addDeletedNoteId: addDeletedNoteId,
   getBadges: loadBadges,
   saveBadges: saveBadges,
   checkAndUnlockBadges: (
