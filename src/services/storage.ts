@@ -541,8 +541,19 @@ export async function syncSharedNotesFromServer(currentUserId?: string): Promise
     }
   }
 
-  // Merged notes from server & database
-  const merged: SharedNote[] = Array.from(serverNotesMap.values()).filter((n) => !isExcludedNote(n) && !deletedIds.has(n.id));
+  // Merged notes from server & database, plus preserved local notes
+  const mergedMap = new Map<string, SharedNote>();
+  for (const [id, note] of currentLocalMap.entries()) {
+    if (!isExcludedNote(note) && !deletedIds.has(id)) {
+      mergedMap.set(id, note);
+    }
+  }
+  for (const [id, note] of serverNotesMap.entries()) {
+    if (!isExcludedNote(note) && !deletedIds.has(id)) {
+      mergedMap.set(id, note);
+    }
+  }
+  const merged: SharedNote[] = Array.from(mergedMap.values());
 
   // 3. SCAN SUPABASE STORAGE BUCKET FOR UNLINKED RAW UPLOADS (SKIP DELETED ITEMS)
   try {
@@ -660,7 +671,7 @@ export async function publishSharedNote(note: Omit<SharedNote, 'id' | 'created_a
     created_at: new Date().toISOString(),
   };
 
-  // 1. Post to backend server API FIRST for durable database persistence
+  // 1. Post to backend server API if available (e.g. Express full-stack runtime)
   let savedRecord: SharedNote = newNote;
   try {
     const res = await fetch('/api/notes', {
@@ -669,19 +680,16 @@ export async function publishSharedNote(note: Omit<SharedNote, 'id' | 'created_a
       body: JSON.stringify(newNote),
     });
 
-    if (!res.ok) {
-      const errorText = await res.text().catch(() => res.statusText);
-      console.error(`Backend failed to publish note (HTTP ${res.status}):`, errorText);
-      throw new Error(`Failed to publish note to server (HTTP ${res.status}): ${errorText}`);
-    }
-
-    const serverConfirmed = await res.json();
-    if (serverConfirmed && serverConfirmed.id) {
-      savedRecord = serverConfirmed;
+    if (res.ok) {
+      const serverConfirmed = await res.json().catch(() => null);
+      if (serverConfirmed && serverConfirmed.id) {
+        savedRecord = serverConfirmed;
+      }
+    } else {
+      console.warn(`Notice: Backend /api/notes returned HTTP ${res.status}. Falling back to Supabase and client storage.`);
     }
   } catch (err: any) {
-    console.error('Error in publishSharedNote API call:', err);
-    throw err;
+    console.warn('Notice: Backend server API unavailable (e.g. static hosting on Vercel), using Supabase and client storage:', err?.message || err);
   }
 
   // 2. Post to Supabase database if configured and table exists
@@ -755,7 +763,7 @@ export async function updateSharedNote(
 
   let savedRecord: SharedNote = updatedNote;
 
-  // 1. Call central server API to update in database
+  // 1. Call central server API if available
   try {
     const res = await fetch(`/api/notes/${encodeURIComponent(noteId)}`, {
       method: 'PUT',
@@ -763,19 +771,16 @@ export async function updateSharedNote(
       body: JSON.stringify(updatedNote),
     });
 
-    if (!res.ok) {
-      const errorText = await res.text().catch(() => res.statusText);
-      console.error(`Backend failed to update note ${noteId} (HTTP ${res.status}):`, errorText);
-      throw new Error(`Failed to update note on server (HTTP ${res.status}): ${errorText}`);
-    }
-
-    const serverConfirmed = await res.json();
-    if (serverConfirmed && serverConfirmed.id) {
-      savedRecord = serverConfirmed;
+    if (res.ok) {
+      const serverConfirmed = await res.json().catch(() => null);
+      if (serverConfirmed && serverConfirmed.id) {
+        savedRecord = serverConfirmed;
+      }
+    } else {
+      console.warn(`Notice: Backend PUT /api/notes returned HTTP ${res.status}. Falling back to Supabase and client storage.`);
     }
   } catch (err: any) {
-    console.error('Error in updateSharedNote API call:', err);
-    throw err;
+    console.warn('Notice: Server API not reachable on static host, saving via Supabase/Local:', err?.message || err);
   }
 
   // 2. Update Supabase database if configured and table exists
