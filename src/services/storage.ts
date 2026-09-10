@@ -386,6 +386,50 @@ export function saveSharedNotes(notes: SharedNote[]): void {
   }
 }
 
+// Helper to extract clean metadata from any uploaded file name
+export function extractUploadedFileMeta(rawFilename: string) {
+  let author = 'Scholar';
+  let userId = 'community_user';
+  let cleanName = rawFilename;
+
+  const byMatch = cleanName.match(/__by__(.*?)__(?:uid__(.*?)__)?/);
+  if (byMatch) {
+    if (byMatch[1]) {
+      try {
+        author = decodeURIComponent(byMatch[1]).replace(/_/g, ' ').trim();
+      } catch {
+        author = byMatch[1].replace(/_/g, ' ').trim();
+      }
+    }
+    if (byMatch[2]) {
+      try {
+        userId = decodeURIComponent(byMatch[2]).trim();
+      } catch {
+        userId = byMatch[2].trim();
+      }
+    }
+    cleanName = cleanName.replace(/^\d+__by__.*?__(?:uid__.*?__)?/, '');
+  } else {
+    cleanName = cleanName.replace(/^\d+_+/, '');
+  }
+
+  if (!cleanName.trim()) {
+    cleanName = rawFilename;
+  }
+
+  const title = cleanName
+    .replace(/\.[^/.]+$/, '')
+    .replace(/[_]+/g, ' ')
+    .trim();
+
+  return {
+    author: author || 'Scholar',
+    userId: userId || 'community_user',
+    cleanName,
+    title: title || cleanName,
+  };
+}
+
 /**
  * Synchronize community notes from central backend & Supabase Storage
  * so all notes, views, and likes are globally synchronized across all users,
@@ -469,19 +513,26 @@ export async function syncSharedNotesFromServer(currentUserId?: string): Promise
     const { url: supabaseUrl } = getSupabaseConfig();
     if (supabase && supabaseUrl) {
       const bucketName = 'Material Library';
-      const folderName = 'Uploaded Material';
-
-      const { data: folderFiles } = await supabase.storage
-        .from(bucketName)
-        .list(folderName, { limit: 100 });
-
+      const foldersToCheck = ['Uploaded Material', ''];
       const allFiles: Array<{ name: string; folder: string; metadata?: any; created_at?: string; updated_at?: string }> = [];
 
-      if (folderFiles && Array.isArray(folderFiles)) {
-        for (const f of folderFiles) {
-          if (f.name && f.name !== '.emptyFolderPlaceholder' && !deletedIds.has(f.name)) {
-            allFiles.push({ ...f, folder: folderName });
+      for (const fld of foldersToCheck) {
+        try {
+          const { data: folderFiles } = await supabase.storage
+            .from(bucketName)
+            .list(fld, { limit: 200 });
+
+          if (folderFiles && Array.isArray(folderFiles)) {
+            for (const f of folderFiles) {
+              if (f.name && f.name !== '.emptyFolderPlaceholder' && f.id !== null && !deletedIds.has(f.name)) {
+                if (!allFiles.some((x) => x.name === f.name && x.folder === fld)) {
+                  allFiles.push({ ...f, folder: fld });
+                }
+              }
+            }
           }
+        } catch (e) {
+          console.warn(`Notice scanning bucket folder "${fld}":`, e);
         }
       }
 
@@ -490,64 +541,37 @@ export async function syncSharedNotesFromServer(currentUserId?: string): Promise
         const safeId = `sup_mat_${f.name.replace(/[^a-zA-Z0-9_-]/g, '_')}`;
         if (deletedIds.has(safeId)) continue;
 
-        let extractedAuthor = 'Scholar';
-        let extractedUserId = 'community_user';
-        let cleanName = f.name;
-
-        const byMatch = f.name.match(/__by__([^_]+)__/);
-        if (byMatch && byMatch[1]) {
-          try {
-            extractedAuthor = decodeURIComponent(byMatch[1]);
-          } catch {
-            extractedAuthor = byMatch[1];
-          }
-        }
-
-        const uidMatch = f.name.match(/__uid__([^_]+)__/);
-        if (uidMatch && uidMatch[1]) {
-          try {
-            extractedUserId = decodeURIComponent(uidMatch[1]);
-          } catch {
-            extractedUserId = uidMatch[1];
-          }
-        }
-
-        cleanName = f.name
-          .replace(/^\d+__by__[^_]+__uid__[^_]+__/, '')
-          .replace(/^\d+__by__[^_]+__/, '')
-          .replace(/^\d+_/, '');
-
-        const titleWithoutExt = cleanName.replace(/\.[^/.]+$/, '');
-        if (deletedIds.has(titleWithoutExt)) continue;
-
-        const filePubUrl = `${supabaseUrl}/storage/v1/object/public/${encodeURIComponent(bucketName)}/${encodeURIComponent(folderName)}/${encodeURIComponent(f.name)}`;
+        const { author, userId, cleanName, title } = extractUploadedFileMeta(f.name);
+        const folderPrefix = f.folder ? `${f.folder}/` : '';
+        const filePubUrl = `${supabaseUrl}/storage/v1/object/public/${encodeURIComponent(bucketName)}/${encodeURIComponent(folderPrefix)}${encodeURIComponent(f.name)}`;
 
         // Check if any note already references this file
         const existingNote = merged.find((n) =>
+          n.id === safeId ||
           (n.attachments || []).some(
             (a) =>
               (a.supabasePath && a.supabasePath.includes(f.name)) ||
               (a.storageUrl && a.storageUrl.includes(f.name)) ||
               a.name === cleanName ||
               a.name === f.name
-          ) || n.title.toLowerCase() === titleWithoutExt.toLowerCase()
+          ) || (title && n.title.toLowerCase() === title.toLowerCase())
         );
 
         if (existingNote) {
           if (existingNote.author_name === 'Peer Contributor' || !existingNote.author_name) {
-            existingNote.author_name = extractedAuthor;
+            existingNote.author_name = author;
           }
-        } else if (byMatch) {
+        } else {
           const isPdf = f.name.toLowerCase().endsWith('.pdf');
           const isImg = /\.(png|jpe?g|webp|gif|svg)$/i.test(f.name);
 
           const newNote: SharedNote = {
             id: safeId,
-            user_id: extractedUserId,
-            author_name: extractedAuthor,
-            title: titleWithoutExt,
+            user_id: userId,
+            author_name: author,
+            title: title || cleanName,
             subject: isPdf ? 'Computer Science' : isImg ? 'Mathematics' : 'Biology',
-            content: `### ${cleanName}\n\nShared study resource and notes uploaded to the community library by ${extractedAuthor}.\n\n- **File Name**: \`${cleanName}\`\n- **Format**: ${isPdf ? 'PDF Document' : isImg ? 'Diagram / Image Asset' : 'Study Resource'}\n- **Storage**: Supabase Material Library`,
+            content: `### ${cleanName}\n\nShared study resource and notes uploaded to the community library by ${author}.\n\n- **File Name**: \`${cleanName}\`\n- **Format**: ${isPdf ? 'PDF Document' : isImg ? 'Diagram / Image Asset' : 'Study Resource'}\n- **Storage**: Supabase Material Library`,
             upvotes: 1,
             views: 1,
             has_upvoted: upvotedIds.has(safeId),
@@ -561,7 +585,7 @@ export async function syncSharedNotesFromServer(currentUserId?: string): Promise
                 dataUrl: filePubUrl,
                 storageType: 'supabase',
                 storageUrl: filePubUrl,
-                supabasePath: `${folderName}/${f.name}`,
+                supabasePath: `${folderPrefix}${f.name}`,
               },
             ],
           };

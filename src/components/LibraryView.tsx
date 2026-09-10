@@ -508,6 +508,16 @@ export const LibraryView: React.FC<LibraryViewProps> = ({
 
   return (
     <div className="space-y-6 max-w-6xl mx-auto pb-12">
+      {/* Hidden direct upload file input */}
+      <input
+        ref={directUploadInputRef}
+        type="file"
+        onChange={handleDirectFileUpload}
+        accept=".pdf,.png,.jpg,.jpeg,.webp,.gif,.txt,.md,.docx,.pptx"
+        className="hidden"
+        id="library-direct-file-input"
+      />
+
       {/* Header Bar */}
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
         <div>
@@ -526,6 +536,22 @@ export const LibraryView: React.FC<LibraryViewProps> = ({
           >
             <RefreshCw className={`w-3.5 h-3.5 text-indigo-500 ${isSyncing ? 'animate-spin' : ''}`} />
             <span>{isSyncing ? 'Syncing...' : 'Sync'}</span>
+          </button>
+          <button
+            onClick={() => {
+              if (isGuest) {
+                setAuthRequiredReason('upload');
+                return;
+              }
+              directUploadInputRef.current?.click();
+            }}
+            id="upload-material-btn"
+            disabled={isUploadingDirect}
+            className="flex items-center gap-2 px-4 py-2 rounded-xl text-xs font-bold text-indigo-700 dark:text-indigo-300 bg-indigo-50 dark:bg-indigo-950/80 hover:bg-indigo-100 dark:hover:bg-indigo-900/80 border border-indigo-200 dark:border-indigo-800 transition shadow-2xs cursor-pointer"
+            title="Upload PDF, diagram, slide, or study document directly to database"
+          >
+            <Upload className="w-4 h-4 text-indigo-600 dark:text-indigo-400" />
+            <span>{isUploadingDirect ? 'Uploading...' : 'Upload Material'}</span>
           </button>
           <button
             onClick={handleOpenPublish}

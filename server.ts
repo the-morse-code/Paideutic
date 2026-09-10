@@ -818,6 +818,50 @@ function saveServerNotes(notes: any[]) {
   }
 }
 
+// Helper to extract clean metadata from any uploaded file name
+function extractUploadedFileMeta(rawFilename: string) {
+  let author = "Scholar";
+  let userId = "community_user";
+  let cleanName = rawFilename;
+
+  const byMatch = cleanName.match(/__by__(.*?)__(?:uid__(.*?)__)?/);
+  if (byMatch) {
+    if (byMatch[1]) {
+      try {
+        author = decodeURIComponent(byMatch[1]).replace(/_/g, " ").trim();
+      } catch {
+        author = byMatch[1].replace(/_/g, " ").trim();
+      }
+    }
+    if (byMatch[2]) {
+      try {
+        userId = decodeURIComponent(byMatch[2]).trim();
+      } catch {
+        userId = byMatch[2].trim();
+      }
+    }
+    cleanName = cleanName.replace(/^\d+__by__.*?__(?:uid__.*?__)?/, "");
+  } else {
+    cleanName = cleanName.replace(/^\d+_+/, "");
+  }
+
+  if (!cleanName.trim()) {
+    cleanName = rawFilename;
+  }
+
+  const title = cleanName
+    .replace(/\.[^/.]+$/, "")
+    .replace(/[_]+/g, " ")
+    .trim();
+
+  return {
+    author: author || "Scholar",
+    userId: userId || "community_user",
+    cleanName,
+    title: title || cleanName,
+  };
+}
+
 // GET all community shared notes (accessible to EVERY user across all devices)
 // Automatically merges materials from the Supabase "Material Library" bucket so ALL users see uploaded files
 app.get("/api/notes", async (_req: Request, res: Response) => {
@@ -830,113 +874,145 @@ app.get("/api/notes", async (_req: Request, res: Response) => {
   if (supabase) {
     try {
       const bucketName = "Material Library";
-      const folderName = "Uploaded Material";
+      const foldersToCheck = ["Uploaded Material", ""];
+      const allFoundFiles: Array<{ name: string; folder: string; metadata?: any; created_at?: string; updated_at?: string }> = [];
 
-      // 1. List files inside "Uploaded Material"
-      const { data: bucketFiles } = await supabase.storage
-        .from(bucketName)
-        .list(folderName, { limit: 100 });
+      for (const fld of foldersToCheck) {
+        try {
+          const { data: bFiles, error: bErr } = await supabase.storage
+            .from(bucketName)
+            .list(fld, { limit: 200 });
 
-      if (bucketFiles && Array.isArray(bucketFiles)) {
-        const validFiles = bucketFiles.filter((f) => {
-          if (f.name === ".emptyFolderPlaceholder") return false;
-          if (deleted.deleted_files.includes(f.name)) return false;
-          if (deleted.deleted_ids.some((id) => id.includes(f.name))) return false;
-          return true;
-        });
-
-        let hasNew = false;
-
-        for (const f of validFiles) {
-          let extractedAuthor = "Scholar";
-          let extractedUserId = "community_user";
-          let cleanName = f.name;
-
-          const byMatch = f.name.match(/__by__([^_]+)__/);
-          if (byMatch && byMatch[1]) {
-            try {
-              extractedAuthor = decodeURIComponent(byMatch[1]);
-            } catch {
-              extractedAuthor = byMatch[1];
+          if (!bErr && Array.isArray(bFiles)) {
+            for (const item of bFiles) {
+              if (item.name && item.name !== ".emptyFolderPlaceholder" && item.id !== null) {
+                // Check if not already in list
+                if (!allFoundFiles.some((f) => f.name === item.name && f.folder === fld)) {
+                  allFoundFiles.push({
+                    name: item.name,
+                    folder: fld,
+                    metadata: item.metadata,
+                    created_at: item.created_at,
+                    updated_at: item.updated_at,
+                  });
+                }
+              }
             }
           }
+        } catch (e) {
+          console.warn(`Notice reading Supabase folder "${fld}":`, e);
+        }
+      }
 
-          const uidMatch = f.name.match(/__uid__([^_]+)__/);
-          if (uidMatch && uidMatch[1]) {
-            try {
-              extractedUserId = decodeURIComponent(uidMatch[1]);
-            } catch {
-              extractedUserId = uidMatch[1];
-            }
-          }
+      let hasNew = false;
 
-          cleanName = f.name
-            .replace(/^\d+__by__[^_]+__uid__[^_]+__/, "")
-            .replace(/^\d+__by__[^_]+__/, "")
-            .replace(/^\d+_/, "");
+      for (const f of allFoundFiles) {
+        if (deleted.deleted_files.includes(f.name)) continue;
+        if (deleted.deleted_ids.some((id) => id.includes(f.name))) continue;
 
-          const filePubUrl = `${supabaseUrl}/storage/v1/object/public/${encodeURIComponent(bucketName)}/${encodeURIComponent(folderName)}/${encodeURIComponent(f.name)}`;
+        const { author, userId, cleanName, title } = extractUploadedFileMeta(f.name);
+        const folderPrefix = f.folder ? `${f.folder}/` : "";
+        const filePubUrl = `${supabaseUrl}/storage/v1/object/public/${encodeURIComponent(bucketName)}/${encodeURIComponent(folderPrefix)}${encodeURIComponent(f.name)}`;
 
-          const normCleanName = cleanName.toLowerCase().replace(/[^a-z0-9]/g, "");
-          const normFName = f.name.toLowerCase().replace(/[^a-z0-9]/g, "");
+        const normCleanName = cleanName.toLowerCase().replace(/[^a-z0-9]/g, "");
+        const normFName = f.name.toLowerCase().replace(/[^a-z0-9]/g, "");
+        const potentialId = `sup_mat_${f.name.replace(/[^a-zA-Z0-9_-]/g, "_")}`;
 
-          const potentialId = `sup_mat_${f.name.replace(/[^a-zA-Z0-9_-]/g, "_")}`;
+        // Check if any note already references this file
+        const alreadyLinked = notes.some((n: any) =>
+          n.id === potentialId ||
+          (n.attachments || []).some((a: any) => {
+            if (!a) return false;
+            const aName = (a.name || "").toLowerCase().replace(/[^a-z0-9]/g, "");
+            const aPath = (a.supabasePath || "").toLowerCase().replace(/[^a-z0-9]/g, "");
+            const aUrl = (a.storageUrl || a.dataUrl || "").toLowerCase().replace(/[^a-z0-9]/g, "");
 
-          // Check if any note already references this file
-          const alreadyLinked = notes.some((n: any) =>
-            n.id === potentialId ||
-            (n.attachments || []).some((a: any) => {
-              if (!a) return false;
-              const aName = (a.name || "").toLowerCase().replace(/[^a-z0-9]/g, "");
-              const aPath = (a.supabasePath || "").toLowerCase().replace(/[^a-z0-9]/g, "");
-              const aUrl = (a.storageUrl || a.dataUrl || "").toLowerCase().replace(/[^a-z0-9]/g, "");
+            return (
+              (aPath && aPath.includes(normFName)) ||
+              (aUrl && aUrl.includes(normFName)) ||
+              (aName && normCleanName && aName === normCleanName) ||
+              (aName && normCleanName && (aName.includes(normCleanName) || normCleanName.includes(aName)))
+            );
+          })
+        );
 
-              return (
-                (aPath && aPath.includes(normFName)) ||
-                (aUrl && aUrl.includes(normFName)) ||
-                (aName && normCleanName && aName === normCleanName) ||
-                (aName && normCleanName && (aName.includes(normCleanName) || normCleanName.includes(aName)))
-              );
-            })
-          );
+        if (!alreadyLinked) {
+          hasNew = true;
+          const isPdf = f.name.toLowerCase().endsWith(".pdf");
+          const isImg = /\.(png|jpe?g|webp|gif|svg)$/i.test(f.name);
 
-          if (!alreadyLinked && byMatch) {
+          notes.unshift({
+            id: potentialId,
+            user_id: userId,
+            author_name: author,
+            title: title || cleanName,
+            subject: isPdf ? "Computer Science" : isImg ? "Mathematics" : "Biology",
+            content: `### ${cleanName}\n\nShared study resource uploaded to the community library by ${author}.\n\n- **File Name**: \`${cleanName}\`\n- **Format**: ${isPdf ? "PDF Document" : isImg ? "Diagram / Image" : "Study Resource"}\n- **Storage**: Supabase Material Library`,
+            upvotes: 1,
+            views: 1,
+            has_upvoted: false,
+            upvoted_by: [],
+            created_at: f.created_at || f.updated_at || new Date().toISOString(),
+            attachments: [
+              {
+                id: `att_sup_${f.name.replace(/[^a-zA-Z0-9_-]/g, "_")}`,
+                name: cleanName,
+                size: (f.metadata as any)?.size || 0,
+                type: (f.metadata as any)?.mimetype || (isPdf ? "application/pdf" : isImg ? "image/png" : "application/octet-stream"),
+                dataUrl: filePubUrl,
+                storageType: "supabase",
+                storageUrl: filePubUrl,
+                supabasePath: `${folderPrefix}${f.name}`,
+              },
+            ],
+          });
+        }
+      }
+
+      // Also scan server uploads folder for any local files not linked
+      if (fs.existsSync(UPLOADS_DIR)) {
+        const localUploads = fs.readdirSync(UPLOADS_DIR);
+        for (const locFile of localUploads) {
+          if (locFile.startsWith(".")) continue;
+          if (deleted.deleted_files.includes(locFile)) continue;
+          const { author, userId, cleanName, title } = extractUploadedFileMeta(locFile);
+          const potentialId = `loc_mat_${locFile.replace(/[^a-zA-Z0-9_-]/g, "_")}`;
+          const isAlready = notes.some((n: any) => n.id === potentialId || (n.attachments || []).some((a: any) => (a.storageUrl || "").includes(locFile)));
+          if (!isAlready) {
             hasNew = true;
-            const isPdf = f.name.toLowerCase().endsWith(".pdf");
-            const isImg = /\.(png|jpe?g|webp|gif|svg)$/i.test(f.name);
-            const titleWithoutExt = cleanName.replace(/\.[^/.]+$/, "");
-
+            const isPdf = locFile.toLowerCase().endsWith(".pdf");
+            const isImg = /\.(png|jpe?g|webp|gif|svg)$/i.test(locFile);
+            const fileUrl = `/api/uploads/${locFile}`;
             notes.unshift({
-              id: `sup_mat_${f.name.replace(/[^a-zA-Z0-9_-]/g, "_")}`,
-              user_id: extractedUserId,
-              author_name: extractedAuthor,
-              title: titleWithoutExt,
+              id: potentialId,
+              user_id: userId,
+              author_name: author,
+              title: title || cleanName,
               subject: isPdf ? "Computer Science" : isImg ? "Mathematics" : "Biology",
-              content: `### ${cleanName}\n\nShared study resource uploaded to the community library by ${extractedAuthor}.\n\n- **File Name**: \`${cleanName}\`\n- **Format**: ${isPdf ? "PDF Document" : isImg ? "Diagram / Image" : "Study Resource"}\n- **Storage**: Supabase Material Library`,
+              content: `### ${cleanName}\n\nStudy material saved to community library by ${author}.\n\n- **File Name**: \`${cleanName}\`\n- **Format**: ${isPdf ? "PDF Document" : isImg ? "Diagram / Image" : "Study Resource"}`,
               upvotes: 1,
               views: 1,
               has_upvoted: false,
               upvoted_by: [],
-              created_at: f.created_at || f.updated_at || new Date().toISOString(),
+              created_at: new Date().toISOString(),
               attachments: [
                 {
-                  id: `att_sup_${f.name.replace(/[^a-zA-Z0-9_-]/g, "_")}`,
+                  id: `att_loc_${locFile.replace(/[^a-zA-Z0-9_-]/g, "_")}`,
                   name: cleanName,
-                  size: (f.metadata as any)?.size || 0,
-                  type: (f.metadata as any)?.mimetype || (isPdf ? "application/pdf" : isImg ? "image/png" : "application/octet-stream"),
-                  dataUrl: filePubUrl,
-                  storageType: "supabase",
-                  storageUrl: filePubUrl,
-                  supabasePath: `${folderName}/${f.name}`,
+                  size: fs.statSync(path.join(UPLOADS_DIR, locFile)).size || 0,
+                  type: isPdf ? "application/pdf" : isImg ? "image/png" : "application/octet-stream",
+                  dataUrl: fileUrl,
+                  storageType: "server",
+                  storageUrl: fileUrl,
                 },
               ],
             });
           }
         }
+      }
 
-        if (hasNew) {
-          saveServerNotes(notes);
-        }
+      if (hasNew) {
+        saveServerNotes(notes);
       }
     } catch (err) {
       console.warn("Notice: Supabase bucket auto-merge notice:", err);

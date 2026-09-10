@@ -98,7 +98,7 @@ export function App() {
 
     const fetchNotes = () => {
       StorageService.syncSharedNotesFromServer(currentUser?.id).then((synced) => {
-        if (isMounted && Array.isArray(synced) && synced.length > 0) {
+        if (isMounted && Array.isArray(synced)) {
           setNotes(synced);
         }
       });
