@@ -855,6 +855,12 @@ app.get("/api/notes", async (_req: Request, res: Response) => {
   res.json(filteredNotes);
 });
 
+// GET deleted note IDs and files for cross-client sync
+app.get("/api/notes/deleted", (_req: Request, res: Response) => {
+  const registry = getDeletedRegistry();
+  res.json(registry);
+});
+
 // POST publish a new shared note (persisted on server so all users can view it)
 app.post("/api/notes", (req: Request, res: Response) => {
   try {

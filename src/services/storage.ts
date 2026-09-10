@@ -469,20 +469,45 @@ export function extractUploadedFileMeta(rawFilename: string) {
 /**
  * Synchronize community notes from central backend & Supabase Storage
  * so all notes, views, and likes are globally synchronized across all users,
- * and uploader's real name is correctly displayed.
+ * and deletions by any user are immediately propagated to all other accounts.
  */
 export async function syncSharedNotesFromServer(currentUserId?: string): Promise<SharedNote[]> {
   let notes = loadSharedNotes().filter((n) => !isExcludedNote(n));
   const currentLocalMap = new Map<string, SharedNote>(notes.map((n) => [n.id, n]));
   const upvotedIds = new Set(notes.filter((n) => n.has_upvoted).map((n) => n.id));
   const deletedIds = getDeletedNoteIds();
+  const deletedFilesSet = new Set<string>();
+
+  // 0. FETCH GLOBALLY DELETED REGISTRY FROM SERVER (Syncs deletions from other accounts)
+  try {
+    const delRes = await fetch('/api/notes/deleted');
+    if (delRes.ok) {
+      const delData = await delRes.json();
+      if (delData && Array.isArray(delData.deleted_ids)) {
+        for (const dId of delData.deleted_ids) {
+          deletedIds.add(dId);
+          addDeletedNoteId(dId);
+        }
+      }
+      if (delData && Array.isArray(delData.deleted_files)) {
+        for (const f of delData.deleted_files) {
+          deletedFilesSet.add(f);
+        }
+      }
+    }
+  } catch (e) {
+    // Static hosting or offline
+  }
 
   const serverNotesMap = new Map<string, SharedNote>();
+  let serverApiReached = false;
+  let supabaseDbReached = false;
 
   // 1. QUERY CENTRAL BACKEND FIRST (/api/notes)
   try {
     const res = await fetch('/api/notes');
     if (res.ok) {
+      serverApiReached = true;
       const serverNotes = await res.json();
       if (Array.isArray(serverNotes)) {
         for (const sn of serverNotes) {
@@ -517,6 +542,7 @@ export async function syncSharedNotesFromServer(currentUserId?: string): Promise
     try {
       const { data: supaRows } = await supabase.from('shared_notes').select('*').order('created_at', { ascending: false });
       if (supaRows && Array.isArray(supaRows)) {
+        supabaseDbReached = true;
         for (const row of supaRows) {
           if (isExcludedNote(row) || deletedIds.has(row.id)) continue;
           const formatted: SharedNote = {
@@ -541,21 +567,11 @@ export async function syncSharedNotesFromServer(currentUserId?: string): Promise
     }
   }
 
-  // Merged notes from server & database, plus preserved local notes
-  const mergedMap = new Map<string, SharedNote>();
-  for (const [id, note] of currentLocalMap.entries()) {
-    if (!isExcludedNote(note) && !deletedIds.has(id)) {
-      mergedMap.set(id, note);
-    }
-  }
-  for (const [id, note] of serverNotesMap.entries()) {
-    if (!isExcludedNote(note) && !deletedIds.has(id)) {
-      mergedMap.set(id, note);
-    }
-  }
-  const merged: SharedNote[] = Array.from(mergedMap.values());
+  // 3. SCAN SUPABASE STORAGE BUCKET FOR CURRENTLY EXISTING FILES
+  const existingBucketFileNames = new Set<string>();
+  let bucketScanned = false;
+  const bucketNotes: SharedNote[] = [];
 
-  // 3. SCAN SUPABASE STORAGE BUCKET FOR UNLINKED RAW UPLOADS (SKIP DELETED ITEMS)
   try {
     const { url: supabaseUrl } = getSupabaseConfig();
     if (supabase && supabaseUrl) {
@@ -570,10 +586,14 @@ export async function syncSharedNotesFromServer(currentUserId?: string): Promise
             .list(fld, { limit: 200 });
 
           if (folderFiles && Array.isArray(folderFiles)) {
+            bucketScanned = true;
             for (const f of folderFiles) {
-              if (f.name && f.name !== '.emptyFolderPlaceholder' && f.id !== null && !deletedIds.has(f.name)) {
-                if (!allFiles.some((x) => x.name === f.name && x.folder === fld)) {
-                  allFiles.push({ ...f, folder: fld });
+              if (f.name && f.name !== '.emptyFolderPlaceholder' && f.id !== null) {
+                existingBucketFileNames.add(f.name);
+                if (!deletedIds.has(f.name) && !deletedFilesSet.has(f.name)) {
+                  if (!allFiles.some((x) => x.name === f.name && x.folder === fld)) {
+                    allFiles.push({ ...f, folder: fld });
+                  }
                 }
               }
             }
@@ -584,7 +604,7 @@ export async function syncSharedNotesFromServer(currentUserId?: string): Promise
       }
 
       for (const f of allFiles) {
-        if (deletedIds.has(f.name)) continue;
+        if (deletedIds.has(f.name) || deletedFilesSet.has(f.name)) continue;
         const safeId = `sup_mat_${f.name.replace(/[^a-zA-Z0-9_-]/g, '_')}`;
         if (deletedIds.has(safeId)) continue;
 
@@ -592,8 +612,8 @@ export async function syncSharedNotesFromServer(currentUserId?: string): Promise
         const folderPrefix = f.folder ? `${f.folder}/` : '';
         const filePubUrl = `${supabaseUrl}/storage/v1/object/public/${encodeURIComponent(bucketName)}/${encodeURIComponent(folderPrefix)}${encodeURIComponent(f.name)}`;
 
-        // Check if any note already references this file
-        const existingNote = merged.find((n) =>
+        // Check if server note already references this file
+        const existingInServer = Array.from(serverNotesMap.values()).find((n) =>
           n.id === safeId ||
           (n.attachments || []).some(
             (a) =>
@@ -604,9 +624,9 @@ export async function syncSharedNotesFromServer(currentUserId?: string): Promise
           ) || (title && n.title.toLowerCase() === title.toLowerCase())
         );
 
-        if (existingNote) {
-          if (existingNote.author_name === 'Peer Contributor' || !existingNote.author_name) {
-            existingNote.author_name = author;
+        if (existingInServer) {
+          if (existingInServer.author_name === 'Peer Contributor' || !existingInServer.author_name) {
+            existingInServer.author_name = author;
           }
         } else {
           const isPdf = f.name.toLowerCase().endsWith('.pdf');
@@ -638,7 +658,7 @@ export async function syncSharedNotesFromServer(currentUserId?: string): Promise
           };
 
           if (!isExcludedNote(newNote) && !deletedIds.has(newNote.id)) {
-            merged.unshift(newNote);
+            bucketNotes.push(newNote);
           }
         }
       }
@@ -647,6 +667,99 @@ export async function syncSharedNotesFromServer(currentUserId?: string): Promise
     console.warn('Notice: Direct Supabase storage check:', err);
   }
 
+  // 4. SMART MERGE & DELETED PURGE:
+  // If remote database or bucket was checked, discard any local note that was deleted on remote!
+  const mergedMap = new Map<string, SharedNote>();
+
+  // Add all verified server / database notes
+  for (const [id, note] of serverNotesMap.entries()) {
+    if (!isExcludedNote(note) && !deletedIds.has(id)) {
+      // If note has attachments referencing files deleted from bucket, verify liveness
+      const hasDeadAttachment = (note.attachments || []).some((att) => {
+        if (deletedFilesSet.has(att.name)) return true;
+        if (att.supabasePath) {
+          const fn = att.supabasePath.split('/').pop() || '';
+          if (fn && deletedFilesSet.has(fn)) return true;
+          if (bucketScanned && fn && !existingBucketFileNames.has(fn)) return true;
+        }
+        return false;
+      });
+
+      if (!hasDeadAttachment) {
+        mergedMap.set(id, note);
+      } else {
+        deletedIds.add(id);
+        addDeletedNoteId(id);
+      }
+    }
+  }
+
+  // Add bucket notes discovered
+  for (const bNote of bucketNotes) {
+    if (!mergedMap.has(bNote.id) && !deletedIds.has(bNote.id)) {
+      mergedMap.set(bNote.id, bNote);
+    }
+  }
+
+  // Check local notes from this device/account:
+  // Keep local notes ONLY if:
+  // 1. It wasn't explicitly deleted
+  // 2. If it is a Supabase material (`sup_mat_`), verify the file actually exists in the bucket
+  // 3. If remote API or Supabase DB was reached, don't keep phantom deleted notes that were removed remotely
+  for (const [id, note] of currentLocalMap.entries()) {
+    if (isExcludedNote(note) || deletedIds.has(id)) {
+      continue;
+    }
+
+    // Check if attachments were deleted
+    let isDead = false;
+    if (note.attachments && note.attachments.length > 0) {
+      for (const att of note.attachments) {
+        if (deletedFilesSet.has(att.name)) {
+          isDead = true;
+          break;
+        }
+        if (att.supabasePath) {
+          const fn = att.supabasePath.split('/').pop() || '';
+          if (deletedFilesSet.has(fn) || (bucketScanned && fn && !existingBucketFileNames.has(fn))) {
+            isDead = true;
+            break;
+          }
+        }
+      }
+    }
+
+    if (id.startsWith('sup_mat_')) {
+      const rawFn = id.replace(/^sup_mat_/, '');
+      if (bucketScanned && !existingBucketFileNames.has(rawFn)) {
+        isDead = true;
+      }
+    }
+
+    if (isDead) {
+      // Mark locally as deleted so it never ghost-appears again
+      deletedIds.add(id);
+      addDeletedNoteId(id);
+      continue;
+    }
+
+    // If already in mergedMap from server, server copy is already used
+    if (!mergedMap.has(id)) {
+      // If neither server nor Supabase DB had this note, and remote was reached:
+      // only keep if created locally in the last 2 minutes
+      const ageMs = Date.now() - new Date(note.created_at || 0).getTime();
+      const isRecentlyCreated = ageMs < 120000;
+      if (isRecentlyCreated || (!serverApiReached && !supabaseDbReached && !bucketScanned)) {
+        mergedMap.set(id, note);
+      } else {
+        // Was deleted remotely by another user/account
+        deletedIds.add(id);
+        addDeletedNoteId(id);
+      }
+    }
+  }
+
+  const merged: SharedNote[] = Array.from(mergedMap.values());
   saveSharedNotes(merged);
   return merged;
 }
