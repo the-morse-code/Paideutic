@@ -9,9 +9,23 @@ import { createServer as createViteServer } from "vite";
 dotenv.config();
 
 const app = express();
-const PORT = 3000;
+const PORT = process.env.PORT ? parseInt(process.env.PORT, 10) : 3000;
 
 app.use(express.json({ limit: "30mb" }));
+
+// Helper to retrieve Gemini API key from all standard environment variable names
+function getGeminiApiKey(): string | null {
+  const key =
+    process.env.GEMINI_API_KEY ||
+    process.env.GOOGLE_API_KEY ||
+    process.env.GOOGLE_GENAI_API_KEY ||
+    process.env.GEMINI_KEY ||
+    process.env.VITE_GEMINI_API_KEY ||
+    process.env.NEXT_PUBLIC_GEMINI_API_KEY ||
+    null;
+
+  return key && key.trim().length > 0 ? key.trim() : null;
+}
 
 // Expose public client configuration (Supabase URL & Public Anon Key) safely to the frontend
 app.get("/api/config", (_req: Request, res: Response) => {
@@ -34,9 +48,9 @@ app.get("/api/config", (_req: Request, res: Response) => {
 
 // Initialize Gemini SDK with User-Agent header as required
 function getGeminiAI(): GoogleGenAI | null {
-  const apiKey = process.env.GEMINI_API_KEY;
+  const apiKey = getGeminiApiKey();
   if (!apiKey) {
-    console.warn("GEMINI_API_KEY not configured in environment.");
+    console.warn("GEMINI_API_KEY (or GOOGLE_API_KEY) not configured in environment.");
     return null;
   }
   return new GoogleGenAI({
@@ -373,9 +387,10 @@ app.get("/api/config", (_req: Request, res: Response) => {
 });
 
 app.get("/api/health", (_req: Request, res: Response) => {
+  const apiKey = getGeminiApiKey();
   res.json({
     status: "ok",
-    hasApiKey: !!process.env.GEMINI_API_KEY,
+    hasApiKey: !!apiKey,
     preferredModel: "gemini-3.8-flash",
   });
 });
