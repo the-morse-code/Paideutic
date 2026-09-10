@@ -214,6 +214,52 @@ function generateLocalChatFallback(message: string, currentWeakTopics: string[] 
     };
   }
 
+  // Lysosomes / Suicidal Bags of the Cell
+  if (queryLower.includes('suicid') || queryLower.includes('lysosome')) {
+    return {
+      answer: `### Lysosomes: The "Suicidal Bags" of the Cell
+
+**Lysosomes** are membrane-bound cellular organelles known as the **"suicidal bags"** (or digestive bags) of the cell.
+
+#### Why are they called suicidal bags?
+1. **Hydrolytic Digestive Enzymes**: Lysosomes contain powerful hydrolytic enzymes (such as *proteases, lipases, nucleases, and carbohydrases*) capable of digesting all macromolecules and cellular components.
+2. **Acidic Environment**: These enzymes function optimally at an acidic pH ($\\approx 4.5 - 5.0$), maintained by active proton pumps ($H^+$-ATPases) in the lysosomal membrane.
+3. **Autolysis & Apoptosis**: When a cell is severely damaged, aged, infected, or undergoes programmed cell death, the lysosomes rupture and release these hydrolytic enzymes directly into the cytoplasm. The enzymes digest the cell's own components, causing the cell to break down (**autolysis**).
+
+#### Key Functions:
+- **Autophagy**: Degrading and recycling worn-out cellular organelles (e.g., old mitochondria).
+- **Heterophagy**: Destroying foreign bacteria, viruses, and antigens engulfed by phagocytosis.
+- **Metamorphosis**: Assisting developmental tissue remodeling (e.g., tail resorption in tadpoles).`,
+      detectedWeakness: extractedTopic || (queryLower.includes('struggle') ? 'Cell Organelles' : null),
+      encouragement: 'Understanding cellular organelles and their enzyme functions is a core milestone in biology!',
+      suggestedFollowUps: [
+        "What is the difference between autophagy and heterophagy?",
+        "Why don't lysosomal enzymes digest the cell under normal conditions?",
+        "How do proton pumps maintain the acidic pH inside lysosomes?"
+      ]
+    };
+  }
+
+  // Ribosomes / Protein Factories
+  if (queryLower.includes('ribosome') || queryLower.includes('protein synthesis') || queryLower.includes('translation')) {
+    return {
+      answer: `### Ribosomes: The "Protein Factories of the Cell"
+
+**Ribosomes** are ribonucleoprotein complexes (composed of ribosomal RNA and proteins) that perform **translation** (protein synthesis).
+
+- **Prokaryotes**: 70S ribosomes (50S large subunit + 30S small subunit).
+- **Eukaryotes**: 80S ribosomes (60S large subunit + 40S small subunit).
+- **Site of Action**: Free in the cytoplasm (synthesizing intracellular proteins) or bound to the **Rough Endoplasmic Reticulum (RER)** (synthesizing membrane and secretable proteins).
+- **Mechanism**: Reads mRNA codons in the $5' \\to 3'$ direction and links corresponding amino acids via peptide bonds.`,
+      detectedWeakness: extractedTopic || (queryLower.includes('struggle') ? 'Molecular Genetics' : null),
+      encouragement: "Understanding translation connects molecular biology directly to cell structure!",
+      suggestedFollowUps: [
+        "How do the A, P, and E sites in the ribosome coordinate tRNA movement?",
+        "What are the initiation, elongation, and termination steps in translation?"
+      ]
+    };
+  }
+
   if (queryLower.includes('powerhouse') || queryLower.includes('mitochondri')) {
     const isStruggling = queryLower.includes('struggle') || queryLower.includes('confused') || queryLower.includes('help');
     return {
@@ -279,14 +325,17 @@ Use the **LIATE** rule to choose $u$:
   // Direct, concise answer for standard academic questions
   const cleanMsg = message.trim();
   return {
-    answer: `Here is a clear, direct explanation for **"${cleanMsg}"**:
+    answer: `### Academic Insight: ${cleanMsg}
 
-Focus on the core definitions, standard governing equations, and essential boundary conditions. Test your intuition by working through a representative problem step-by-step.`,
+#### Core Definitions & Key Principles:
+- **Conceptual Definition**: Break down the foundational terminology, governing laws, and underlying physical/biological mechanisms.
+- **Governing Relationships**: Identify standard formulas, conservation principles, and boundary conditions that apply to this subject.
+- **Exam Strategy**: Always verify units, state explicit assumptions, and test corner cases (such as $t=0$, limits at infinity, or neutral conditions).`,
     detectedWeakness: extractedTopic,
     encouragement: "Active inquiry is the fastest path to deep academic comprehension!",
     suggestedFollowUps: [
-      "Could you provide a worked step-by-step example?",
-      "What are the most common exam traps on this topic?"
+      `Could you provide a worked step-by-step example on ${cleanMsg}?`,
+      `What are the most common exam traps on this topic?`
     ]
   };
 }

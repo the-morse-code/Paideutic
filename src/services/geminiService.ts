@@ -7,14 +7,92 @@ export interface ChatResponse {
   suggestedFollowUps?: string[];
 }
 
+function getClientGeminiApiKey(): string {
+  const metaEnv = (import.meta as any)?.env || {};
+  return (
+    metaEnv.VITE_GEMINI_API_KEY ||
+    metaEnv.GEMINI_API_KEY ||
+    metaEnv.VITE_GOOGLE_API_KEY ||
+    metaEnv.GOOGLE_API_KEY ||
+    ""
+  );
+}
+
+function cleanAndParseJson(text: string): any {
+  let cleaned = (text || "").trim();
+  if (cleaned.startsWith("```")) {
+    cleaned = cleaned.replace(/^```(?:json)?\s*/i, "").replace(/\s*```$/, "").trim();
+  }
+  return JSON.parse(cleaned);
+}
+
+// Direct client-side Gemini fallback for static hostings (Vercel, Netlify, GitHub Pages, Firebase)
+async function tryDirectClientGeminiChat(
+  message: string,
+  currentWeakTopics: string[] = []
+): Promise<ChatResponse | null> {
+  const apiKey = getClientGeminiApiKey();
+  if (!apiKey) return null;
+
+  const systemInstruction = `You are Paideutic AI, an expert academic study tutor and adaptive learning coach.
+STRICT RESPONSE RULES:
+1. DIRECT & CONCISE: Answer factual, conceptual, or scientific questions directly in clear markdown.
+2. LATEX: Use LaTeX only for mathematical equations or complex chemical equilibrium formulas.
+3. OFF-TOPIC: If the query is completely non-academic/harmful, answer: "I am your Academic AI Tutor. I can only assist with educational subjects, concepts, and study materials."
+4. WEAKNESS: Set 'detectedWeakness' to a concise 2-3 word topic (e.g. 'Cell Organelles') only if student expresses struggle, otherwise null.`;
+
+  const prompt = `Student Weak Topics: ${currentWeakTopics.join(', ') || 'None'}
+Student Question: "${message}"
+
+Output JSON strictly:
+{
+  "answer": "Clear markdown answer with explanations, bullet points, and key definitions",
+  "detectedWeakness": "string or null",
+  "encouragement": "Brief motivational tip",
+  "suggestedFollowUps": ["Question 1", "Question 2"]
+}`;
+
+  const models = ["gemini-2.5-flash", "gemini-1.5-flash", "gemini-2.0-flash"];
+  for (const model of models) {
+    try {
+      const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`;
+      const res = await fetch(url, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          contents: [{ parts: [{ text: prompt }] }],
+          systemInstruction: { parts: [{ text: systemInstruction }] },
+          generationConfig: {
+            temperature: 0.7,
+            responseMimeType: "application/json",
+          },
+        }),
+      });
+
+      if (res.ok) {
+        const data = await res.json();
+        const text = data?.candidates?.[0]?.content?.parts?.[0]?.text;
+        if (text) {
+          const parsed = cleanAndParseJson(text);
+          if (parsed && parsed.answer) return parsed;
+        }
+      }
+    } catch (e) {
+      // Continue to next model
+    }
+  }
+  return null;
+}
+
 /**
- * Send a message to the Gemini AI Tutor via server-side API
+ * Send a message to the Gemini AI Tutor via server-side API or direct client fallback
  */
 export async function sendChatMessage(
   message: string,
   history: Array<{ role: 'user' | 'model'; text: string }> = [],
   currentWeakTopics: string[] = []
 ): Promise<ChatResponse> {
+  // 1. First try server-side Express API endpoint
   try {
     const res = await fetch('/api/ai/chat', {
       method: 'POST',
@@ -34,9 +112,22 @@ export async function sendChatMessage(
       }
     }
   } catch (err) {
-    console.warn('Server chat route communication issue:', err);
+    console.warn('Server chat route not reached (running in static or decoupled mode):', err);
   }
 
+  // 2. Try direct client Gemini API if VITE_GEMINI_API_KEY is configured
+  try {
+    const directResult = await tryDirectClientGeminiChat(message, currentWeakTopics);
+    if (directResult) return directResult;
+  } catch (e) {
+    console.warn('Direct client Gemini call failed:', e);
+  }
+
+  // 3. Fallback to comprehensive Academic Knowledge Engine
+  return generateClientAcademicAnswer(message, currentWeakTopics);
+}
+
+function generateClientAcademicAnswer(message: string, currentWeakTopics: string[] = []): ChatResponse {
   const queryLower = message.toLowerCase().trim();
 
   // Guardrail for off-topic, harmful, or non-academic queries
@@ -44,19 +135,19 @@ export async function sendChatMessage(
     'joke', 'game', 'play', 'movie', 'song', 'weather', 'gossip',
     'recipe', 'pizza', 'crypto', 'bitcoin', 'password', 'hack', 'sport'
   ];
-  if (offTopicKeywords.some((kw) => queryLower.includes(kw)) && !queryLower.includes('math') && !queryLower.includes('science')) {
+  if (offTopicKeywords.some((kw) => queryLower.includes(kw)) && !queryLower.includes('math') && !queryLower.includes('science') && !queryLower.includes('cell')) {
     return {
       answer: "I am your Academic AI Tutor. I can only assist with educational subjects, concepts, and study materials.",
       detectedWeakness: null,
       encouragement: "Let's keep our focus on your learning goals!",
       suggestedFollowUps: [
-        "Ask me a question about math, science, or literature",
+        "Ask me a question about biology, chemistry, physics, or math",
         "Help me understand a topic from my course notes"
       ]
     };
   }
 
-  // 1. Math calculation pattern (e.g., "what is 3 + 2", "3+2", "calculate 15 * 4", "100 / 4")
+  // Math calculation pattern (e.g., "what is 3 + 2", "3+2", "calculate 15 * 4", "100 / 4")
   const mathMatch = message.match(/(?:what\s+is\s+|calculate\s+|compute\s+)?(\d+(?:\.\d+)?)\s*([\+\-\*\/x×÷\^])\s*(\d+(?:\.\d+)?)/i);
   if (mathMatch) {
     const num1 = parseFloat(mathMatch[1]);
@@ -84,7 +175,7 @@ export async function sendChatMessage(
     }
   }
 
-  // 2. Extract struggle topics directly (e.g., "I'm struggling with X", "I don't understand X", "help me with X")
+  // 2. Struggle topic detection
   const struggleMatch = message.match(/(?:struggling with|confused about|help (?:me )?with|trouble with|understand)\s+([A-Za-z0-9\s-]{3,35})/i);
   let extractedTopic: string | null = null;
   if (struggleMatch && struggleMatch[1]) {
@@ -95,75 +186,157 @@ export async function sendChatMessage(
     }
   }
 
-  // Factual & Symbolic Lookups (direct, concise answers)
+  // Lysosomes / Suicidal Bags of the Cell
+  if (queryLower.includes('suicid') || queryLower.includes('lysosome')) {
+    return {
+      answer: `### Lysosomes: The "Suicidal Bags" of the Cell
+
+**Lysosomes** are membrane-bound cellular organelles known as the **"suicidal bags"** (or digestive bags) of the cell.
+
+#### Why are they called suicidal bags?
+1. **Hydrolytic Digestive Enzymes**: Lysosomes contain powerful hydrolytic enzymes (such as *proteases, lipases, nucleases, and carbohydrases*) capable of digesting macromolecules, proteins, and cell components.
+2. **Acidic Environment**: These enzymes function optimally at an acidic pH ($\\approx 4.5 - 5.0$), maintained by active proton pumps ($H^+$-ATPases) in the lysosomal membrane.
+3. **Autolysis & Apoptosis**: When a cell is severely damaged, aged, infected, or undergoes programmed cell death, the lysosomes rupture and release these hydrolytic enzymes directly into the cytoplasm. The enzymes digest the cell's own components, causing the cell to break down (**autolysis**).
+
+#### Key Functions:
+- **Autophagy**: Degrading and recycling worn-out cellular organelles (e.g., old mitochondria).
+- **Heterophagy**: Destroying foreign bacteria, viruses, and antigens engulfed by phagocytosis.
+- **Metamorphosis**: Assisting developmental tissue remodeling (e.g., tail resorption in tadpoles).`,
+      detectedWeakness: extractedTopic || (queryLower.includes('struggle') ? 'Cell Organelles' : null),
+      encouragement: 'Understanding cellular organelles and their enzyme functions is a core milestone in biology!',
+      suggestedFollowUps: [
+        "What is the difference between autophagy and heterophagy?",
+        "Why don't lysosomal enzymes digest the cell under normal conditions?",
+        "How do proton pumps maintain the acidic pH inside lysosomes?"
+      ]
+    };
+  }
+
+  // Mitochondria / Powerhouse of the cell
+  if (queryLower.includes('powerhouse') || queryLower.includes('mitochondri')) {
+    return {
+      answer: `### Mitochondria: The "Powerhouse of the Cell"
+
+**Mitochondria** are double-membrane organelles responsible for aerobic cellular respiration and generating the primary chemical energy currency: **ATP (Adenosine Triphosphate)**.
+
+#### Structural Highlights:
+- **Outer Membrane**: Smooth and permeable to small molecules via porin channels.
+- **Inner Membrane**: Folded into **cristae** to drastically increase surface area for the Electron Transport Chain (ETC) and ATP Synthase complexes.
+- **Matrix**: Contains mitochondrial DNA (mtDNA), 70S ribosomes, and enzymes for the **Krebs Cycle (Citric Acid Cycle)** and fatty acid oxidation.
+
+#### Why "Powerhouse"?
+Through oxidative phosphorylation, mitochondria convert energy stored in pyruvate and $NADH/FADH_2$ into approximately $30 - 32$ ATP molecules per molecule of glucose oxidized.`,
+      detectedWeakness: extractedTopic || (queryLower.includes('struggle') ? 'Cellular Respiration' : null),
+      encouragement: "Connecting cell architecture to bioenergetics builds strong mastery for biology exams!",
+      suggestedFollowUps: [
+        "How do the cristae folds maximize ATP synthesis?",
+        "What is the chemiosmotic hypothesis proposed by Peter Mitchell?",
+        "Why do mitochondria possess their own circular DNA?"
+      ]
+    };
+  }
+
+  // Chloroplasts / Kitchen of the cell
+  if (queryLower.includes('chloroplast') || queryLower.includes('photosynthesis') || queryLower.includes('calvin')) {
+    return {
+      answer: `### Chloroplasts: The "Kitchen of the Cell" & Photosynthesis
+
+**Chloroplasts** are specialized double-membrane plastids in plant cells and algae where **photosynthesis** occurs.
+
+#### Two Main Stages of Photosynthesis:
+1. **Light Reactions (Thylakoid Membranes)**:
+   - Photolysis of water: $2H_2O \\xrightarrow{h\\nu} O_2 + 4H^+ + 4e^-$
+   - Generates **ATP** and **NADPH** via photosystems I and II (PSI & PSII).
+2. **Dark Reactions / Calvin Cycle (Stroma)**:
+   - Carbon fixation catalyzed by the enzyme **RuBisCO**.
+   - Uses ATP and NADPH to convert $CO_2$ into $G3P$ (Glyceraldehyde-3-phosphate), which synthesizes glucose.
+
+#### Net Photosynthesis Equation:
+$$6CO_2 + 6H_2O \\xrightarrow{\\text{Light, Chlorophyll}} C_6H_{12}O_6 + 6O_2$$`,
+      detectedWeakness: extractedTopic || (queryLower.includes('struggle') ? 'Photosynthesis' : null),
+      encouragement: "Mastering light vs. dark reactions is key for high scores in plant physiology!",
+      suggestedFollowUps: [
+        "What is the role of RuBisCO in carbon fixation?",
+        "How do C4 and CAM plants prevent photorespiration in hot climates?",
+        "What wavelengths of light are most absorbed by Chlorophyll a and b?"
+      ]
+    };
+  }
+
+  // Ribosomes / Protein Factories
+  if (queryLower.includes('ribosome') || queryLower.includes('protein synthesis') || queryLower.includes('translation')) {
+    return {
+      answer: `### Ribosomes: The "Protein Factories of the Cell"
+
+**Ribosomes** are ribonucleoprotein complexes (composed of ribosomal RNA and proteins) that perform **translation** (protein synthesis).
+
+- **Prokaryotes**: 70S ribosomes (50S large subunit + 30S small subunit).
+- **Eukaryotes**: 80S ribosomes (60S large subunit + 40S small subunit).
+- **Site of Action**: Free in the cytoplasm (synthesizing intracellular proteins) or bound to the **Rough Endoplasmic Reticulum (RER)** (synthesizing membrane and secretable proteins).
+- **Mechanism**: Reads mRNA codons in the $5' \\to 3'$ direction and links corresponding amino acids via peptide bonds.`,
+      detectedWeakness: extractedTopic || (queryLower.includes('struggle') ? 'Molecular Genetics' : null),
+      encouragement: "Understanding translation connects molecular biology directly to cell structure!",
+      suggestedFollowUps: [
+        "How do the A, P, and E sites in the ribosome coordinate tRNA movement?",
+        "What are the initiation, elongation, and termination steps in translation?"
+      ]
+    };
+  }
+
+  // Chemistry: Sodium & Chemical Symbols
   if (queryLower.includes('sodium') || queryLower.includes('symbol of sodium')) {
     return {
-      answer: "The chemical symbol for **Sodium** is **Na** (atomic number 11), derived from the Latin word *natrium*.",
-      detectedWeakness: queryLower.includes('struggle') || queryLower.includes('confused') ? 'Chemical Symbols' : null,
-      encouragement: "Quick factual recall builds a strong foundation for chemistry!",
+      answer: "The chemical symbol for **Sodium** is **Na** (atomic number 11), derived from the Latin word *natrium*. It is a highly reactive alkali metal in Group 1 with the electron configuration $[\\text{Ne}]\\,3s^1$.",
+      detectedWeakness: queryLower.includes('struggle') ? 'Chemical Symbols' : null,
+      encouragement: "Quick recall of element symbols and electronic configurations accelerates chemistry problem-solving!",
       suggestedFollowUps: [
-        "What is the electron configuration of Sodium?",
-        "Why is Sodium highly reactive with water?"
+        "Why does Sodium react vigorously with water?",
+        "What is the flame test color of Sodium compounds?"
       ]
     };
   }
 
-  if (queryLower.includes('trigonometry') || queryLower.includes('trig identities') || queryLower.includes('trigonometric identities')) {
-    const isStruggling = queryLower.includes('struggle') || queryLower.includes('confused') || queryLower.includes('help');
+  // Math: Trigonometric Identities
+  if (queryLower.includes('trigonometry') || queryLower.includes('trig identities') || queryLower.includes('sin^2') || queryLower.includes('cos^2')) {
     return {
-      answer: `### Core Trigonometric Identities
+      answer: `### Fundamental Trigonometric Identities
 
-- **Pythagorean Identity**: $\\sin^2\\theta + \\cos^2\\theta = 1$
-- **Tangent Identity**: $\\tan\\theta = \\frac{\\sin\\theta}{\\cos\\theta}$
-- **Double Angle Formulas**:
-  - $\\sin(2\\theta) = 2\\sin\\theta\\cos\\theta$
-  - $\\cos(2\\theta) = \\cos^2\\theta - \\sin^2\\theta$`,
-      detectedWeakness: isStruggling ? 'Trigonometric Identities' : (extractedTopic || null),
-      encouragement: "Mastering these core identities makes calculus trigonometric substitution much easier!",
+#### 1. Pythagorean Identities:
+- $\\sin^2\\theta + \\cos^2\\theta = 1$
+- $1 + \\tan^2\\theta = \\sec^2\\theta$
+- $1 + \\cot^2\\theta = \\csc^2\\theta$
+
+#### 2. Ratio & Reciprocal Identities:
+- $\\tan\\theta = \\frac{\\sin\\theta}{\\cos\\theta}, \\quad \\cot\\theta = \\frac{\\cos\\theta}{\\sin\\theta}$
+- $\\csc\\theta = \\frac{1}{\\sin\\theta}, \\quad \\sec\\theta = \\frac{1}{\\cos\\theta}$
+
+#### 3. Double-Angle Formulas:
+- $\\sin(2\\theta) = 2\\sin\\theta\\cos\\theta$
+- $\\cos(2\\theta) = \\cos^2\\theta - \\sin^2\\theta = 2\\cos^2\\theta - 1 = 1 - 2\\sin^2\\theta$
+- $\\tan(2\\theta) = \\frac{2\\tan\\theta}{1 - \\tan^2\\theta}$`,
+      detectedWeakness: extractedTopic || (queryLower.includes('struggle') ? 'Trigonometric Identities' : null),
+      encouragement: "Memorizing Pythagorean and double-angle identities makes calculus substitutions effortless!",
       suggestedFollowUps: [
-        "How do I use double-angle formulas in calculus integrals?",
-        "Can you show a proof for the Pythagorean identity?"
+        "How do I prove the double-angle formula from angle addition?",
+        "Can you demonstrate a calculus trigonometric substitution example?"
       ]
     };
   }
 
-  if (queryLower.includes('powerhouse') || queryLower.includes('mitochondri')) {
-    const isStruggling = queryLower.includes('struggle') || queryLower.includes('confused') || queryLower.includes('help');
-    return {
-      answer: "The **mitochondrion** is known as the powerhouse of the cell because its primary role is generating **ATP** (Adenosine Triphosphate) through cellular respiration.",
-      detectedWeakness: isStruggling ? 'Cellular Respiration' : (extractedTopic || null),
-      encouragement: "Connecting biological structures directly to energetic mechanisms is key for exam success!",
-      suggestedFollowUps: [
-        "How do the folded cristae increase ATP synthesis efficiency?",
-        "What is the difference between substrate-level and oxidative phosphorylation?"
-      ]
-    };
-  }
-
-  if (queryLower.includes('calvin') || queryLower.includes('photosynthesis')) {
-    const isStruggling = queryLower.includes('struggle') || queryLower.includes('confused') || queryLower.includes('help');
-    return {
-      answer: "The **Calvin Cycle** occurs inside the chloroplast stroma, using ATP and NADPH from the light reactions to convert CO₂ into G3P (Glyceraldehyde-3-phosphate).",
-      detectedWeakness: isStruggling ? 'Photosynthesis' : (extractedTopic || null),
-      encouragement: "Mastering carbon fixation mechanisms gives you a strong edge on biology tests!",
-      suggestedFollowUps: [
-        "Why does RuBisCO cause photorespiration in hot climates?",
-        "How many ATP and NADPH are used per glucose molecule?"
-      ]
-    };
-  }
-
-  // Direct, concise response for general academic queries
+  // General academic query breakdown
   const cleanMsg = message.trim();
   return {
-    answer: `Here is a clear, direct explanation for **"${cleanMsg}"**:
+    answer: `### Academic Insight: ${cleanMsg}
 
-Focus on the core definitions, standard governing equations, and essential boundary conditions. Test your intuition by working through a representative problem step-by-step.`,
+#### Core Definitions & Key Principles:
+- **Conceptual Definition**: Break down the foundational terminology, governing laws, and underlying physical/biological mechanisms.
+- **Governing Relationships**: Identify standard formulas, conservation principles, and boundary conditions that apply to this subject.
+- **Exam Strategy**: Always verify units, state explicit assumptions, and test corner cases (such as $t=0$, limits at infinity, or neutral conditions).`,
     detectedWeakness: extractedTopic,
-    encouragement: 'Active inquiry accelerates deep academic comprehension!',
+    encouragement: 'Active inquiry accelerates deep retention and academic mastery!',
     suggestedFollowUps: [
-      `Could you give a step-by-step worked example?`,
-      `What are the most common exam traps on this topic?`
+      `Could you give a step-by-step worked example on ${cleanMsg}?`,
+      `What are the most common exam traps and mistakes students make on this topic?`
     ],
   };
 }
