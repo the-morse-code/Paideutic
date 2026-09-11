@@ -324,7 +324,16 @@ export function getDeletedNoteIds(): Set<string> {
   try {
     const raw = localStorage.getItem(DELETED_NOTES_KEY);
     const list: string[] = raw ? JSON.parse(raw) : [];
-    const validIds = list.filter((id) => typeof id === 'string' && id.trim().length > 0);
+    const myNoteIds = getMyNoteIds();
+    // Clean out active user note IDs if they were mistakenly marked as deleted
+    const validIds = list.filter(
+      (id) => typeof id === 'string' && id.trim().length > 0 && !myNoteIds.has(id)
+    );
+
+    if (validIds.length !== list.length) {
+      localStorage.setItem(DELETED_NOTES_KEY, JSON.stringify(validIds));
+    }
+
     return new Set([...PERMANENT_EXCLUDED_NOTE_IDS, ...validIds]);
   } catch {
     return new Set(PERMANENT_EXCLUDED_NOTE_IDS);
@@ -401,23 +410,22 @@ function isTableMissingError(error: any): boolean {
 
 export function isExcludedNote(note: any): boolean {
   if (!note) return true;
-  const deleted = getDeletedNoteIds();
-  if (note.id && deleted.has(note.id)) return true;
   if (note.id && PERMANENT_EXCLUDED_NOTE_IDS.includes(note.id)) return true;
-  const title = (note.title || '').toLowerCase();
-  if (
-    title.includes('integration by parts') ||
-    title.includes('calvin cycle') ||
-    title.includes('avl balance')
-  ) {
-    return true;
-  }
   return false;
 }
 
 export function isNoteDeleted(note: any, deletedIds: Set<string>, deletedFiles: Set<string>): boolean {
   if (!note) return true;
   if (isExcludedNote(note)) return true;
+
+  // Active notes created/published by this user session MUST NOT be marked deleted unless explicitly in deletedIds
+  const myNotes = getMyNoteIds();
+  if (note.id && myNotes.has(note.id)) {
+    const rawDeleted = getDeletedNoteIds();
+    if (!rawDeleted.has(note.id)) {
+      return false;
+    }
+  }
 
   if (note.id) {
     if (deletedIds.has(note.id) || deletedIds.has(decodeURIComponent(note.id))) return true;
@@ -435,9 +443,7 @@ export function isNoteDeleted(note: any, deletedIds: Set<string>, deletedFiles: 
 
   for (const att of atts) {
     if (!att) continue;
-    if (att.name) {
-      if (deletedFiles.has(att.name) || deletedFiles.has(decodeURIComponent(att.name))) return true;
-    }
+    if (att.name && (deletedFiles.has(att.name) || deletedFiles.has(decodeURIComponent(att.name)))) return true;
     if (att.supabasePath) {
       const fn = att.supabasePath.split('/').pop();
       if (fn && (deletedFiles.has(fn) || deletedFiles.has(decodeURIComponent(fn)))) return true;
@@ -449,17 +455,6 @@ export function isNoteDeleted(note: any, deletedIds: Set<string>, deletedFiles: 
     if (att.dataUrl) {
       const fn = att.dataUrl.split('/').pop();
       if (fn && (deletedFiles.has(fn) || deletedFiles.has(decodeURIComponent(fn)))) return true;
-    }
-  }
-
-  // Cross check note ID against all deleted file tokens
-  if (note.id) {
-    const normId = note.id.toLowerCase().replace(/[^a-z0-9]/g, '');
-    for (const df of deletedFiles) {
-      const normDF = df.toLowerCase().replace(/[^a-z0-9]/g, '');
-      if (normDF && normDF.length > 3 && normId.includes(normDF)) {
-        return true;
-      }
     }
   }
 
@@ -920,31 +915,14 @@ export async function syncSharedNotesFromServer(currentUserId?: string): Promise
   }
 
   // C. Add local notes from this device that haven't been deleted
-  const hasRemoteSource = serverApiReached || supabaseDbReached || manifestFetched;
-
   for (const [id, note] of currentLocalMap.entries()) {
     if (isNoteDeleted(note, authoritativeDeletedIds, authoritativeDeletedFiles)) {
       currentLocalMap.delete(id);
-      authoritativeDeletedIds.add(id);
-      addDeletedNoteId(id);
       continue;
     }
 
     if (!mergedMap.has(id)) {
-      if (hasRemoteSource) {
-        const ageMs = Date.now() - new Date(note.created_at || 0).getTime();
-        const isVeryNewLocalDraft = ageMs < 60000;
-        if (isVeryNewLocalDraft) {
-          mergedMap.set(id, note);
-        } else {
-          // Note was deleted remotely by another user! Record deletion locally so it never appears again
-          authoritativeDeletedIds.add(id);
-          addDeletedNoteId(id);
-          currentLocalMap.delete(id);
-        }
-      } else {
-        mergedMap.set(id, note);
-      }
+      mergedMap.set(id, note);
     }
   }
 
@@ -1021,7 +999,10 @@ export async function publishSharedNote(note: Omit<SharedNote, 'id' | 'created_a
   }
 
   // 3. Update local state cache with the database-confirmed record
+  removeDeletedNoteId(newNote.id);
+  removeDeletedNoteId(savedRecord.id);
   addMyNoteId(savedRecord.id);
+  addMyNoteId(newNote.id);
   const currentNotes = loadSharedNotes();
   const updatedList = [savedRecord, ...currentNotes.filter((n) => n.id !== savedRecord.id && n.id !== newNote.id)];
   saveSharedNotes(updatedList);
@@ -1272,34 +1253,30 @@ export async function deleteSharedNote(noteOrId: string | SharedNote): Promise<S
   addDeletedNoteId(noteId);
   removeMyNoteId(noteId);
 
-  // Extract all attached filenames and sup_mat_ IDs
+  // Extract attached filenames
   const atts = target ? (Array.isArray(target.attachments) ? target.attachments : Array.isArray((target as any).attachments_json) ? (target as any).attachments_json : []) : [];
 
   for (const att of atts) {
     if (!att) continue;
     if (att.name) {
       addDeletedFile(att.name);
-      addDeletedNoteId(`sup_mat_${att.name.replace(/[^a-zA-Z0-9_-]/g, '_')}`);
     }
     if (att.supabasePath) {
       const fname = att.supabasePath.split('/').pop();
       if (fname) {
         addDeletedFile(fname);
-        addDeletedNoteId(`sup_mat_${fname.replace(/[^a-zA-Z0-9_-]/g, '_')}`);
       }
     }
     if (att.storageUrl) {
       const fname = att.storageUrl.split('/').pop();
       if (fname) {
         addDeletedFile(fname);
-        addDeletedNoteId(`sup_mat_${fname.replace(/[^a-zA-Z0-9_-]/g, '_')}`);
       }
     }
     if (att.dataUrl) {
       const fname = att.dataUrl.split('/').pop();
       if (fname) {
         addDeletedFile(fname);
-        addDeletedNoteId(`sup_mat_${fname.replace(/[^a-zA-Z0-9_-]/g, '_')}`);
       }
     }
   }
@@ -1307,10 +1284,6 @@ export async function deleteSharedNote(noteOrId: string | SharedNote): Promise<S
   if (noteId.startsWith('sup_mat_')) {
     const rawFname = noteId.replace(/^sup_mat_/, '');
     addDeletedFile(rawFname);
-  }
-
-  if (target?.title) {
-    addDeletedNoteId(`sup_mat_${target.title.replace(/[^a-zA-Z0-9_-]/g, '_')}`);
   }
 
   // 1. Post updated deleted registry to server FIRST

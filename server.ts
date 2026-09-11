@@ -559,16 +559,7 @@ function getBackendSupabaseClient() {
 
 function isPreExistingDemoNote(note: any): boolean {
   if (!note) return false;
-  if (PERMANENT_EXCLUDED_IDS.includes(note.id)) return true;
-  const title = (note.title || "").toLowerCase();
-  if (
-    title.includes("integration by parts") ||
-    title.includes("calvin cycle") ||
-    title.includes("avl balance")
-  ) {
-    return true;
-  }
-  return false;
+  return PERMANENT_EXCLUDED_IDS.includes(note.id);
 }
 
 function getDeletedRegistry(): DeletedRegistry {
@@ -977,6 +968,13 @@ app.post("/api/notes", (req: Request, res: Response) => {
       upvoted_by: noteData.user_id ? [noteData.user_id] : [],
       created_at: noteData.created_at || new Date().toISOString(),
     };
+
+    // Clean newly created note ID from deleted registry if present
+    const reg = getDeletedRegistry();
+    if (reg.deleted_ids.includes(newNote.id)) {
+      reg.deleted_ids = reg.deleted_ids.filter((id) => id !== newNote.id);
+      saveDeletedRegistry(reg);
+    }
 
     // Prepend new note so it appears at top of library
     const updated = [newNote, ...notes.filter((n: any) => n.id !== newNote.id)];
