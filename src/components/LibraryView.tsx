@@ -582,15 +582,6 @@ export const LibraryView: React.FC<LibraryViewProps> = ({
             <span>{isSyncing ? 'Syncing...' : 'Sync'}</span>
           </button>
           <button
-            onClick={() => handleOpenPublish(true)}
-            id="upload-material-btn"
-            className="flex items-center gap-2 px-4 py-2 rounded-xl text-xs font-bold text-indigo-700 dark:text-indigo-300 bg-indigo-50 dark:bg-indigo-950/80 hover:bg-indigo-100 dark:hover:bg-indigo-900/80 border border-indigo-200 dark:border-indigo-800 transition shadow-2xs cursor-pointer"
-            title="Upload PDF, diagram, slide, or study document"
-          >
-            <Upload className="w-4 h-4 text-indigo-600 dark:text-indigo-400" />
-            <span>Upload Material</span>
-          </button>
-          <button
             onClick={() => handleOpenPublish(false)}
             id="publish-study-note-btn"
             className="flex items-center gap-2 px-4.5 py-2 rounded-xl text-xs font-bold text-white bg-indigo-600 hover:bg-indigo-700 transition shadow-xs cursor-pointer"
