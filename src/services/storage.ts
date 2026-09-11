@@ -478,32 +478,54 @@ export function extractUploadedFileMeta(rawFilename: string) {
 const BUCKET_NAME = 'Material Library';
 const MANIFEST_FILE_PATH = 'community_notes_manifest.json';
 
+export interface BucketManifestData {
+  notes: SharedNote[];
+  deleted_ids: string[];
+  deleted_files: string[];
+}
+
 export async function fetchBucketManifestNotes(): Promise<SharedNote[]> {
+  const data = await fetchBucketManifestData();
+  return data.notes;
+}
+
+export async function fetchBucketManifestData(): Promise<BucketManifestData> {
   const supabase = getSupabaseClient();
   const { url: supabaseUrl } = getSupabaseConfig();
+
+  let parsed: any = null;
 
   if (supabaseUrl) {
     try {
       const publicUrl = `${supabaseUrl}/storage/v1/object/public/${encodeURIComponent(BUCKET_NAME)}/${MANIFEST_FILE_PATH}?t=${Date.now()}`;
       const res = await fetch(publicUrl);
       if (res.ok) {
-        const data = await res.json();
-        if (Array.isArray(data)) return data;
+        parsed = await res.json();
       }
     } catch {}
   }
 
-  if (supabase) {
+  if (!parsed && supabase) {
     try {
       const { data, error } = await supabase.storage.from(BUCKET_NAME).download(MANIFEST_FILE_PATH);
       if (data && !error) {
         const text = await data.text();
-        const parsed = JSON.parse(text);
-        if (Array.isArray(parsed)) return parsed;
+        parsed = JSON.parse(text);
       }
     } catch {}
   }
-  return [];
+
+  if (Array.isArray(parsed)) {
+    return { notes: parsed, deleted_ids: [], deleted_files: [] };
+  } else if (parsed && typeof parsed === 'object') {
+    return {
+      notes: Array.isArray(parsed.notes) ? parsed.notes : [],
+      deleted_ids: Array.isArray(parsed.deleted_ids) ? parsed.deleted_ids : [],
+      deleted_files: Array.isArray(parsed.deleted_files) ? parsed.deleted_files : [],
+    };
+  }
+
+  return { notes: [], deleted_ids: [], deleted_files: [] };
 }
 
 export async function saveBucketManifestNotes(notes: SharedNote[]): Promise<void> {
@@ -511,6 +533,9 @@ export async function saveBucketManifestNotes(notes: SharedNote[]): Promise<void
   if (!supabase) return;
 
   try {
+    const deletedSet = getDeletedNoteIds();
+    const deletedArray = Array.from(deletedSet);
+
     const cleanNotes = notes.map((n) => ({
       id: n.id,
       user_id: n.user_id,
@@ -534,7 +559,13 @@ export async function saveBucketManifestNotes(notes: SharedNote[]): Promise<void
       created_at: n.created_at || new Date().toISOString(),
     }));
 
-    const blob = new Blob([JSON.stringify(cleanNotes, null, 2)], { type: 'application/json' });
+    const manifestData: BucketManifestData = {
+      notes: cleanNotes,
+      deleted_ids: deletedArray,
+      deleted_files: [],
+    };
+
+    const blob = new Blob([JSON.stringify(manifestData, null, 2)], { type: 'application/json' });
     await supabase.storage.from(BUCKET_NAME).upload(MANIFEST_FILE_PATH, blob, {
       upsert: true,
       cacheControl: '0',
@@ -580,11 +611,15 @@ export async function syncSharedNotesFromServer(currentUserId?: string): Promise
   }
 
   const serverNotesMap = new Map<string, SharedNote>();
+  let serverApiReached = false;
+  let supabaseDbReached = false;
+  let manifestFetched = false;
 
   // 1. QUERY CENTRAL BACKEND FIRST (/api/notes)
   try {
     const res = await fetch('/api/notes');
     if (res.ok) {
+      serverApiReached = true;
       const serverNotes = await res.json();
       if (Array.isArray(serverNotes)) {
         for (const sn of serverNotes) {
@@ -621,6 +656,7 @@ export async function syncSharedNotesFromServer(currentUserId?: string): Promise
     try {
       const { data: supaRows } = await supabase.from('shared_notes').select('*').order('created_at', { ascending: false });
       if (supaRows && Array.isArray(supaRows)) {
+        supabaseDbReached = true;
         for (const row of supaRows) {
           if (isExcludedNote(row) || authoritativeDeletedIds.has(row.id)) continue;
           removeDeletedNoteId(row.id);
@@ -647,22 +683,37 @@ export async function syncSharedNotesFromServer(currentUserId?: string): Promise
     }
   }
 
-  // 3. FETCH BUCKET MANIFEST NOTES (Consensus storage for static hosts/Vercel)
+  // 3. FETCH BUCKET MANIFEST NOTES & DELETED REGISTRY (Consensus storage for static hosts/Vercel)
   try {
-    const manifestNotes = await fetchBucketManifestNotes();
-    if (Array.isArray(manifestNotes)) {
-      for (const mn of manifestNotes) {
-        if (isExcludedNote(mn) || authoritativeDeletedIds.has(mn.id)) continue;
-        removeDeletedNoteId(mn.id);
+    const manifestData = await fetchBucketManifestData();
+    if (manifestData) {
+      if (Array.isArray(manifestData.deleted_ids)) {
+        for (const dId of manifestData.deleted_ids) {
+          if (dId) {
+            authoritativeDeletedIds.add(dId);
+            addDeletedNoteId(dId);
+          }
+        }
+      }
+      if (Array.isArray(manifestData.deleted_files)) {
+        for (const f of manifestData.deleted_files) {
+          if (f) authoritativeDeletedFiles.add(f);
+        }
+      }
+      if (Array.isArray(manifestData.notes)) {
+        manifestFetched = manifestData.notes.length > 0 || manifestData.deleted_ids.length > 0;
+        for (const mn of manifestData.notes) {
+          if (isExcludedNote(mn) || authoritativeDeletedIds.has(mn.id)) continue;
 
-        if (!serverNotesMap.has(mn.id)) {
-          const localMatch = currentLocalMap.get(mn.id);
-          serverNotesMap.set(mn.id, {
-            ...mn,
-            has_upvoted: upvotedIds.has(mn.id) || !!localMatch?.has_upvoted,
-            upvotes: Math.max(Number(mn.upvotes) || 1, Number(localMatch?.upvotes) || 1),
-            views: Math.max(Number(mn.views) || 1, Number(localMatch?.views) || 1),
-          });
+          if (!serverNotesMap.has(mn.id)) {
+            const localMatch = currentLocalMap.get(mn.id);
+            serverNotesMap.set(mn.id, {
+              ...mn,
+              has_upvoted: upvotedIds.has(mn.id) || !!localMatch?.has_upvoted,
+              upvotes: Math.max(Number(mn.upvotes) || 1, Number(localMatch?.upvotes) || 1),
+              views: Math.max(Number(mn.views) || 1, Number(localMatch?.views) || 1),
+            });
+          }
         }
       }
     }
@@ -787,13 +838,27 @@ export async function syncSharedNotesFromServer(currentUserId?: string): Promise
   }
 
   // C. Add local notes from this device that haven't been deleted
+  const hasRemoteSource = serverApiReached || supabaseDbReached || manifestFetched;
+
   for (const [id, note] of currentLocalMap.entries()) {
     if (isExcludedNote(note) || authoritativeDeletedIds.has(id)) {
       continue;
     }
 
     if (!mergedMap.has(id)) {
-      mergedMap.set(id, note);
+      if (hasRemoteSource) {
+        const ageMs = Date.now() - new Date(note.created_at || 0).getTime();
+        const isVeryNewLocalDraft = ageMs < 60000;
+        if (isVeryNewLocalDraft) {
+          mergedMap.set(id, note);
+        } else {
+          // Note was deleted remotely by another user! Record deletion locally so it never appears again
+          authoritativeDeletedIds.add(id);
+          addDeletedNoteId(id);
+        }
+      } else {
+        mergedMap.set(id, note);
+      }
     }
   }
 
