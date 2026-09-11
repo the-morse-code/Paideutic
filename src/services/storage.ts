@@ -348,6 +348,15 @@ export function addDeletedNoteId(id: string): void {
   } catch {}
 }
 
+export function removeDeletedNoteId(id: string): void {
+  if (typeof window === 'undefined' || !id) return;
+  try {
+    const set = getDeletedNoteIds();
+    set.delete(id);
+    localStorage.setItem(DELETED_NOTES_KEY, JSON.stringify(Array.from(set)));
+  } catch {}
+}
+
 let hasSharedNotesTable = true;
 
 function isTableMissingError(error: any): boolean {
@@ -469,29 +478,31 @@ export function extractUploadedFileMeta(rawFilename: string) {
 /**
  * Synchronize community notes from central backend & Supabase Storage
  * so all notes, views, and likes are globally synchronized across all users,
- * and deletions by any user are immediately propagated to all other accounts.
+ * and materials remain permanently visible to all viewers.
  */
 export async function syncSharedNotesFromServer(currentUserId?: string): Promise<SharedNote[]> {
-  let notes = loadSharedNotes().filter((n) => !isExcludedNote(n));
-  const currentLocalMap = new Map<string, SharedNote>(notes.map((n) => [n.id, n]));
-  const upvotedIds = new Set(notes.filter((n) => n.has_upvoted).map((n) => n.id));
-  const deletedIds = getDeletedNoteIds();
-  const deletedFilesSet = new Set<string>();
+  const localNotes = loadSharedNotes().filter((n) => !isExcludedNote(n));
+  const currentLocalMap = new Map<string, SharedNote>(localNotes.map((n) => [n.id, n]));
+  const upvotedIds = new Set(localNotes.filter((n) => n.has_upvoted).map((n) => n.id));
+  
+  // Authoritative globally deleted IDs
+  const authoritativeDeletedIds = new Set<string>(PERMANENT_EXCLUDED_NOTE_IDS);
+  const authoritativeDeletedFiles = new Set<string>();
 
-  // 0. FETCH GLOBALLY DELETED REGISTRY FROM SERVER (Syncs deletions from other accounts)
+  // 0. FETCH GLOBALLY DELETED REGISTRY FROM SERVER (The ONLY authoritative deletion source)
   try {
     const delRes = await fetch('/api/notes/deleted');
     if (delRes.ok) {
       const delData = await delRes.json();
       if (delData && Array.isArray(delData.deleted_ids)) {
         for (const dId of delData.deleted_ids) {
-          deletedIds.add(dId);
+          authoritativeDeletedIds.add(dId);
           addDeletedNoteId(dId);
         }
       }
       if (delData && Array.isArray(delData.deleted_files)) {
         for (const f of delData.deleted_files) {
-          deletedFilesSet.add(f);
+          authoritativeDeletedFiles.add(f);
         }
       }
     }
@@ -500,18 +511,18 @@ export async function syncSharedNotesFromServer(currentUserId?: string): Promise
   }
 
   const serverNotesMap = new Map<string, SharedNote>();
-  let serverApiReached = false;
-  let supabaseDbReached = false;
 
   // 1. QUERY CENTRAL BACKEND FIRST (/api/notes)
   try {
     const res = await fetch('/api/notes');
     if (res.ok) {
-      serverApiReached = true;
       const serverNotes = await res.json();
       if (Array.isArray(serverNotes)) {
         for (const sn of serverNotes) {
-          if (isExcludedNote(sn) || deletedIds.has(sn.id)) continue;
+          if (isExcludedNote(sn) || authoritativeDeletedIds.has(sn.id)) continue;
+          // Unflag from local deleted cache if server proves it is active
+          removeDeletedNoteId(sn.id);
+
           const userHasUpvoted = Array.isArray(sn.upvoted_by)
             ? (currentUserId ? sn.upvoted_by.includes(currentUserId) : upvotedIds.has(sn.id))
             : (upvotedIds.has(sn.id) || !!sn.has_upvoted);
@@ -542,9 +553,10 @@ export async function syncSharedNotesFromServer(currentUserId?: string): Promise
     try {
       const { data: supaRows } = await supabase.from('shared_notes').select('*').order('created_at', { ascending: false });
       if (supaRows && Array.isArray(supaRows)) {
-        supabaseDbReached = true;
         for (const row of supaRows) {
-          if (isExcludedNote(row) || deletedIds.has(row.id)) continue;
+          if (isExcludedNote(row) || authoritativeDeletedIds.has(row.id)) continue;
+          removeDeletedNoteId(row.id);
+
           const formatted: SharedNote = {
             id: row.id,
             user_id: row.user_id || 'community_user',
@@ -567,11 +579,8 @@ export async function syncSharedNotesFromServer(currentUserId?: string): Promise
     }
   }
 
-  // 3. SCAN SUPABASE STORAGE BUCKET FOR CURRENTLY EXISTING FILES
-  const existingBucketFileNames = new Set<string>();
-  let bucketScanned = false;
+  // 3. SCAN SUPABASE STORAGE BUCKET FOR DIRECT RAW UPLOADS
   const bucketNotes: SharedNote[] = [];
-
   try {
     const { url: supabaseUrl } = getSupabaseConfig();
     if (supabase && supabaseUrl) {
@@ -586,11 +595,9 @@ export async function syncSharedNotesFromServer(currentUserId?: string): Promise
             .list(fld, { limit: 200 });
 
           if (folderFiles && Array.isArray(folderFiles)) {
-            bucketScanned = true;
             for (const f of folderFiles) {
               if (f.name && f.name !== '.emptyFolderPlaceholder' && f.id !== null) {
-                existingBucketFileNames.add(f.name);
-                if (!deletedIds.has(f.name) && !deletedFilesSet.has(f.name)) {
+                if (!authoritativeDeletedFiles.has(f.name) && !authoritativeDeletedIds.has(f.name)) {
                   if (!allFiles.some((x) => x.name === f.name && x.folder === fld)) {
                     allFiles.push({ ...f, folder: fld });
                   }
@@ -604,9 +611,9 @@ export async function syncSharedNotesFromServer(currentUserId?: string): Promise
       }
 
       for (const f of allFiles) {
-        if (deletedIds.has(f.name) || deletedFilesSet.has(f.name)) continue;
+        if (authoritativeDeletedFiles.has(f.name)) continue;
         const safeId = `sup_mat_${f.name.replace(/[^a-zA-Z0-9_-]/g, '_')}`;
-        if (deletedIds.has(safeId)) continue;
+        if (authoritativeDeletedIds.has(safeId)) continue;
 
         const { author, userId, cleanName, title } = extractUploadedFileMeta(f.name);
         const folderPrefix = f.folder ? `${f.folder}/` : '';
@@ -657,7 +664,7 @@ export async function syncSharedNotesFromServer(currentUserId?: string): Promise
             ],
           };
 
-          if (!isExcludedNote(newNote) && !deletedIds.has(newNote.id)) {
+          if (!isExcludedNote(newNote) && !authoritativeDeletedIds.has(newNote.id)) {
             bucketNotes.push(newNote);
           }
         }
@@ -667,95 +674,31 @@ export async function syncSharedNotesFromServer(currentUserId?: string): Promise
     console.warn('Notice: Direct Supabase storage check:', err);
   }
 
-  // 4. SMART MERGE & DELETED PURGE:
-  // If remote database or bucket was checked, discard any local note that was deleted on remote!
+  // 4. UNIFIED MERGE: Combine server notes, bucket notes, and active local notes
   const mergedMap = new Map<string, SharedNote>();
 
-  // Add all verified server / database notes
+  // A. Add all verified server / database notes
   for (const [id, note] of serverNotesMap.entries()) {
-    if (!isExcludedNote(note) && !deletedIds.has(id)) {
-      // If note has attachments referencing files deleted from bucket, verify liveness
-      const hasDeadAttachment = (note.attachments || []).some((att) => {
-        if (deletedFilesSet.has(att.name)) return true;
-        if (att.supabasePath) {
-          const fn = att.supabasePath.split('/').pop() || '';
-          if (fn && deletedFilesSet.has(fn)) return true;
-          if (bucketScanned && fn && !existingBucketFileNames.has(fn)) return true;
-        }
-        return false;
-      });
-
-      if (!hasDeadAttachment) {
-        mergedMap.set(id, note);
-      } else {
-        deletedIds.add(id);
-        addDeletedNoteId(id);
-      }
+    if (!isExcludedNote(note) && !authoritativeDeletedIds.has(id)) {
+      mergedMap.set(id, note);
     }
   }
 
-  // Add bucket notes discovered
+  // B. Add bucket notes discovered
   for (const bNote of bucketNotes) {
-    if (!mergedMap.has(bNote.id) && !deletedIds.has(bNote.id)) {
+    if (!mergedMap.has(bNote.id) && !authoritativeDeletedIds.has(bNote.id) && !isExcludedNote(bNote)) {
       mergedMap.set(bNote.id, bNote);
     }
   }
 
-  // Check local notes from this device/account:
-  // Keep local notes ONLY if:
-  // 1. It wasn't explicitly deleted
-  // 2. If it is a Supabase material (`sup_mat_`), verify the file actually exists in the bucket
-  // 3. If remote API or Supabase DB was reached, don't keep phantom deleted notes that were removed remotely
+  // C. Add local notes from this device that haven't been deleted
   for (const [id, note] of currentLocalMap.entries()) {
-    if (isExcludedNote(note) || deletedIds.has(id)) {
+    if (isExcludedNote(note) || authoritativeDeletedIds.has(id)) {
       continue;
     }
 
-    // Check if attachments were deleted
-    let isDead = false;
-    if (note.attachments && note.attachments.length > 0) {
-      for (const att of note.attachments) {
-        if (deletedFilesSet.has(att.name)) {
-          isDead = true;
-          break;
-        }
-        if (att.supabasePath) {
-          const fn = att.supabasePath.split('/').pop() || '';
-          if (deletedFilesSet.has(fn) || (bucketScanned && fn && !existingBucketFileNames.has(fn))) {
-            isDead = true;
-            break;
-          }
-        }
-      }
-    }
-
-    if (id.startsWith('sup_mat_')) {
-      const rawFn = id.replace(/^sup_mat_/, '');
-      if (bucketScanned && !existingBucketFileNames.has(rawFn)) {
-        isDead = true;
-      }
-    }
-
-    if (isDead) {
-      // Mark locally as deleted so it never ghost-appears again
-      deletedIds.add(id);
-      addDeletedNoteId(id);
-      continue;
-    }
-
-    // If already in mergedMap from server, server copy is already used
     if (!mergedMap.has(id)) {
-      // If neither server nor Supabase DB had this note, and remote was reached:
-      // only keep if created locally in the last 2 minutes
-      const ageMs = Date.now() - new Date(note.created_at || 0).getTime();
-      const isRecentlyCreated = ageMs < 120000;
-      if (isRecentlyCreated || (!serverApiReached && !supabaseDbReached && !bucketScanned)) {
-        mergedMap.set(id, note);
-      } else {
-        // Was deleted remotely by another user/account
-        deletedIds.add(id);
-        addDeletedNoteId(id);
-      }
+      mergedMap.set(id, note);
     }
   }
 
