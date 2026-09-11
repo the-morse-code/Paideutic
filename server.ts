@@ -872,8 +872,54 @@ app.get("/api/notes", async (_req: Request, res: Response) => {
 
 // GET deleted note IDs and files for cross-client sync
 app.get("/api/notes/deleted", (_req: Request, res: Response) => {
+  res.setHeader("Cache-Control", "no-store, no-cache, must-revalidate, proxy-revalidate");
   const registry = getDeletedRegistry();
   res.json(registry);
+});
+
+// POST register newly deleted note IDs and files from clients
+app.post("/api/notes/deleted", (req: Request, res: Response) => {
+  try {
+    const { deleted_ids, deleted_files } = req.body || {};
+    const registry = getDeletedRegistry();
+
+    if (Array.isArray(deleted_ids)) {
+      for (const id of deleted_ids) {
+        if (id && typeof id === "string" && !registry.deleted_ids.includes(id)) {
+          registry.deleted_ids.push(id);
+        }
+      }
+    }
+
+    if (Array.isArray(deleted_files)) {
+      for (const f of deleted_files) {
+        if (f && typeof f === "string" && !registry.deleted_files.includes(f)) {
+          registry.deleted_files.push(f);
+        }
+      }
+    }
+
+    saveDeletedRegistry(registry);
+
+    // Purge deleted items from central community_notes.json file
+    const notes = loadServerNotes();
+    const cleanNotes = notes.filter((n: any) => {
+      if (registry.deleted_ids.includes(n.id)) return false;
+      const atts = Array.isArray(n.attachments) ? n.attachments : [];
+      for (const a of atts) {
+        if (!a) continue;
+        if (a.name && registry.deleted_files.includes(a.name)) return false;
+        if (a.supabasePath && registry.deleted_files.includes(path.basename(a.supabasePath))) return false;
+        if (a.storageUrl && registry.deleted_files.includes(path.basename(a.storageUrl))) return false;
+      }
+      return true;
+    });
+    saveServerNotes(cleanNotes);
+
+    return res.status(200).json({ success: true, registry });
+  } catch (err: any) {
+    return res.status(500).json({ error: err?.message || String(err) });
+  }
 });
 
 // POST publish a new shared note (persisted on server so all users can view it)

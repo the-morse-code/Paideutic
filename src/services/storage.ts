@@ -418,21 +418,51 @@ export function isExcludedNote(note: any): boolean {
 export function isNoteDeleted(note: any, deletedIds: Set<string>, deletedFiles: Set<string>): boolean {
   if (!note) return true;
   if (isExcludedNote(note)) return true;
-  if (note.id && deletedIds.has(note.id)) return true;
-  if (Array.isArray(note.attachments)) {
-    for (const att of note.attachments) {
-      if (!att) continue;
-      if (att.name && deletedFiles.has(att.name)) return true;
-      if (att.supabasePath) {
-        const fn = att.supabasePath.split('/').pop();
-        if (fn && deletedFiles.has(fn)) return true;
-      }
-      if (att.storageUrl) {
-        const fn = att.storageUrl.split('/').pop();
-        if (fn && deletedFiles.has(fn)) return true;
+
+  if (note.id) {
+    if (deletedIds.has(note.id) || deletedIds.has(decodeURIComponent(note.id))) return true;
+    for (const dId of deletedIds) {
+      if (note.id === dId || decodeURIComponent(note.id) === decodeURIComponent(dId)) return true;
+    }
+  }
+
+  // Support note.attachments OR note.attachments_json (from Supabase DB rows)
+  const atts = Array.isArray(note.attachments)
+    ? note.attachments
+    : Array.isArray(note.attachments_json)
+    ? note.attachments_json
+    : [];
+
+  for (const att of atts) {
+    if (!att) continue;
+    if (att.name) {
+      if (deletedFiles.has(att.name) || deletedFiles.has(decodeURIComponent(att.name))) return true;
+    }
+    if (att.supabasePath) {
+      const fn = att.supabasePath.split('/').pop();
+      if (fn && (deletedFiles.has(fn) || deletedFiles.has(decodeURIComponent(fn)))) return true;
+    }
+    if (att.storageUrl) {
+      const fn = att.storageUrl.split('/').pop();
+      if (fn && (deletedFiles.has(fn) || deletedFiles.has(decodeURIComponent(fn)))) return true;
+    }
+    if (att.dataUrl) {
+      const fn = att.dataUrl.split('/').pop();
+      if (fn && (deletedFiles.has(fn) || deletedFiles.has(decodeURIComponent(fn)))) return true;
+    }
+  }
+
+  // Cross check note ID against all deleted file tokens
+  if (note.id) {
+    const normId = note.id.toLowerCase().replace(/[^a-z0-9]/g, '');
+    for (const df of deletedFiles) {
+      const normDF = df.toLowerCase().replace(/[^a-z0-9]/g, '');
+      if (normDF && normDF.length > 3 && normId.includes(normDF)) {
+        return true;
       }
     }
   }
+
   return false;
 }
 
@@ -1231,34 +1261,45 @@ export async function incrementNoteView(noteId: string): Promise<SharedNote[]> {
   return loadSharedNotes();
 }
 
-export async function deleteSharedNote(noteId: string): Promise<SharedNote[]> {
+export async function deleteSharedNote(noteOrId: string | SharedNote): Promise<SharedNote[]> {
   const currentNotes = loadSharedNotes();
-  const target = currentNotes.find((n) => n.id === noteId || decodeURIComponent(n.id) === decodeURIComponent(noteId));
+  const noteId = typeof noteOrId === 'object' ? noteOrId.id : noteOrId;
+  const target = typeof noteOrId === 'object' 
+    ? noteOrId 
+    : currentNotes.find((n) => n.id === noteId || decodeURIComponent(n.id) === decodeURIComponent(noteId));
 
   // Mark ID as deleted locally
   addDeletedNoteId(noteId);
   removeMyNoteId(noteId);
 
   // Extract all attached filenames and sup_mat_ IDs
-  if (target && Array.isArray(target.attachments)) {
-    for (const att of target.attachments) {
-      if (att.name) {
-        addDeletedFile(att.name);
-        addDeletedNoteId(`sup_mat_${att.name.replace(/[^a-zA-Z0-9_-]/g, '_')}`);
+  const atts = target ? (Array.isArray(target.attachments) ? target.attachments : Array.isArray((target as any).attachments_json) ? (target as any).attachments_json : []) : [];
+
+  for (const att of atts) {
+    if (!att) continue;
+    if (att.name) {
+      addDeletedFile(att.name);
+      addDeletedNoteId(`sup_mat_${att.name.replace(/[^a-zA-Z0-9_-]/g, '_')}`);
+    }
+    if (att.supabasePath) {
+      const fname = att.supabasePath.split('/').pop();
+      if (fname) {
+        addDeletedFile(fname);
+        addDeletedNoteId(`sup_mat_${fname.replace(/[^a-zA-Z0-9_-]/g, '_')}`);
       }
-      if (att.supabasePath) {
-        const fname = att.supabasePath.split('/').pop();
-        if (fname) {
-          addDeletedFile(fname);
-          addDeletedNoteId(`sup_mat_${fname.replace(/[^a-zA-Z0-9_-]/g, '_')}`);
-        }
+    }
+    if (att.storageUrl) {
+      const fname = att.storageUrl.split('/').pop();
+      if (fname) {
+        addDeletedFile(fname);
+        addDeletedNoteId(`sup_mat_${fname.replace(/[^a-zA-Z0-9_-]/g, '_')}`);
       }
-      if (att.storageUrl) {
-        const fname = att.storageUrl.split('/').pop();
-        if (fname) {
-          addDeletedFile(fname);
-          addDeletedNoteId(`sup_mat_${fname.replace(/[^a-zA-Z0-9_-]/g, '_')}`);
-        }
+    }
+    if (att.dataUrl) {
+      const fname = att.dataUrl.split('/').pop();
+      if (fname) {
+        addDeletedFile(fname);
+        addDeletedNoteId(`sup_mat_${fname.replace(/[^a-zA-Z0-9_-]/g, '_')}`);
       }
     }
   }
@@ -1268,7 +1309,25 @@ export async function deleteSharedNote(noteId: string): Promise<SharedNote[]> {
     addDeletedFile(rawFname);
   }
 
-  // 1. Direct HTTP DELETE to central server database FIRST
+  if (target?.title) {
+    addDeletedNoteId(`sup_mat_${target.title.replace(/[^a-zA-Z0-9_-]/g, '_')}`);
+  }
+
+  // 1. Post updated deleted registry to server FIRST
+  try {
+    await fetch('/api/notes/deleted', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        deleted_ids: Array.from(getDeletedNoteIds()),
+        deleted_files: Array.from(getDeletedFiles()),
+      }),
+    });
+  } catch (e) {
+    console.warn('Notice posting deleted registry to server:', e);
+  }
+
+  // 2. Direct HTTP DELETE to central server database
   try {
     const res = await fetch(`/api/notes/${encodeURIComponent(noteId)}`, { 
       method: 'DELETE',
@@ -1282,13 +1341,13 @@ export async function deleteSharedNote(noteId: string): Promise<SharedNote[]> {
     console.error('Error in deleteSharedNote API call:', e);
   }
 
-  // 2. Supabase DB delete if configured and table exists
+  // 3. Supabase DB delete if configured and table exists
   const supabase = getSupabaseClient();
   if (supabase && hasSharedNotesTable) {
     try {
-      const { error } = await supabase.from('shared_notes').delete().eq('id', noteId);
-      if (error && !isTableMissingError(error)) {
-        console.warn('Supabase note delete notice:', error.message);
+      await supabase.from('shared_notes').delete().eq('id', noteId);
+      if (target?.title) {
+        await supabase.from('shared_notes').delete().eq('title', target.title);
       }
     } catch (e: any) {
       if (!isTableMissingError(e)) {
@@ -1297,10 +1356,10 @@ export async function deleteSharedNote(noteId: string): Promise<SharedNote[]> {
     }
   }
 
-  // 3. Supabase Storage bucket file removal
-  if (supabase && target && Array.isArray(target.attachments)) {
+  // 4. Supabase Storage bucket file removal
+  if (supabase && target) {
     const pathsToRemove: string[] = [];
-    for (const att of target.attachments) {
+    for (const att of atts) {
       if (att.supabasePath) {
         pathsToRemove.push(att.supabasePath);
       }
@@ -1321,13 +1380,13 @@ export async function deleteSharedNote(noteId: string): Promise<SharedNote[]> {
     }
   }
 
-  // 4. Update local state
+  // 5. Update local state
   const deletedSet = getDeletedNoteIds();
   const deletedFilesSet = getDeletedFiles();
   const remaining = loadSharedNotes().filter((n) => !isNoteDeleted(n, deletedSet, deletedFilesSet));
   saveSharedNotes(remaining);
 
-  // 5. Update consensus bucket manifest for cross-account static hosting
+  // 6. Update consensus bucket manifest for cross-account static hosting
   await saveBucketManifestNotes(remaining);
 
   if (typeof window !== 'undefined') {

@@ -543,9 +543,9 @@ export const LibraryView: React.FC<LibraryViewProps> = ({
     setIsDeleting(true);
     try {
       if (onDeleteNote) {
-        await onDeleteNote(idToDelete);
+        await onDeleteNote(noteToDelete as any);
       } else {
-        await StorageService.deleteSharedNote(idToDelete);
+        await StorageService.deleteSharedNote(noteToDelete);
       }
       StorageService.removeMyNoteId(idToDelete);
       setMyNoteIds(StorageService.getMyNoteIds());
