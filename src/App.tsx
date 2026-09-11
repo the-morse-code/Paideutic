@@ -409,8 +409,8 @@ export function App() {
     }
   };
 
-  const handleDeleteNote = async (noteOrId: string | SharedNote) => {
-    const updated = await StorageService.deleteSharedNote(noteOrId);
+  const handleDeleteNote = async (noteId: string) => {
+    const updated = await StorageService.deleteSharedNote(noteId);
     if (Array.isArray(updated)) {
       setNotes(updated);
     }

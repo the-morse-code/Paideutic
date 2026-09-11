@@ -559,7 +559,16 @@ function getBackendSupabaseClient() {
 
 function isPreExistingDemoNote(note: any): boolean {
   if (!note) return false;
-  return PERMANENT_EXCLUDED_IDS.includes(note.id);
+  if (PERMANENT_EXCLUDED_IDS.includes(note.id)) return true;
+  const title = (note.title || "").toLowerCase();
+  if (
+    title.includes("integration by parts") ||
+    title.includes("calvin cycle") ||
+    title.includes("avl balance")
+  ) {
+    return true;
+  }
+  return false;
 }
 
 function getDeletedRegistry(): DeletedRegistry {
@@ -840,77 +849,16 @@ app.get("/api/notes", async (_req: Request, res: Response) => {
   }
 
   // Double check deleted filter and pre-existing filter before returning
-  const filteredNotes = notes.filter((n: any) => {
-    if (deleted.deleted_ids.includes(n.id) || isPreExistingDemoNote(n)) return false;
-    if (Array.isArray(n.attachments)) {
-      for (const att of n.attachments) {
-        if (!att) continue;
-        if (att.name && deleted.deleted_files.includes(att.name)) return false;
-        if (att.supabasePath) {
-          const fn = path.basename(att.supabasePath);
-          if (fn && deleted.deleted_files.includes(fn)) return false;
-        }
-        if (att.storageUrl) {
-          const fn = path.basename(att.storageUrl);
-          if (fn && deleted.deleted_files.includes(fn)) return false;
-        }
-      }
-    }
-    return true;
-  });
+  const filteredNotes = notes.filter(
+    (n: any) => !deleted.deleted_ids.includes(n.id) && !isPreExistingDemoNote(n)
+  );
   res.json(filteredNotes);
 });
 
 // GET deleted note IDs and files for cross-client sync
 app.get("/api/notes/deleted", (_req: Request, res: Response) => {
-  res.setHeader("Cache-Control", "no-store, no-cache, must-revalidate, proxy-revalidate");
   const registry = getDeletedRegistry();
   res.json(registry);
-});
-
-// POST register newly deleted note IDs and files from clients
-app.post("/api/notes/deleted", (req: Request, res: Response) => {
-  try {
-    const { deleted_ids, deleted_files } = req.body || {};
-    const registry = getDeletedRegistry();
-
-    if (Array.isArray(deleted_ids)) {
-      for (const id of deleted_ids) {
-        if (id && typeof id === "string" && !registry.deleted_ids.includes(id)) {
-          registry.deleted_ids.push(id);
-        }
-      }
-    }
-
-    if (Array.isArray(deleted_files)) {
-      for (const f of deleted_files) {
-        if (f && typeof f === "string" && !registry.deleted_files.includes(f)) {
-          registry.deleted_files.push(f);
-        }
-      }
-    }
-
-    saveDeletedRegistry(registry);
-
-    // Purge deleted items from central community_notes.json file
-    const notes = loadServerNotes();
-    const cleanNotes = notes.filter((n: any) => {
-      if (registry.deleted_ids.includes(n.id)) return false;
-      const atts = Array.isArray(n.attachments) ? n.attachments : [];
-      for (const a of atts) {
-        if (!a) continue;
-        if (a.name && registry.deleted_files.includes(a.name)) return false;
-        if (a.supabasePath && registry.deleted_files.includes(path.basename(a.supabasePath))) return false;
-        if (a.storageUrl && registry.deleted_files.includes(path.basename(a.storageUrl))) return false;
-      }
-      return true;
-    });
-    saveServerNotes(cleanNotes);
-
-    return res.status(200).json({ success: true, registry });
-  } catch (err: any) {
-    return res.status(500).json({ error: err?.message || String(err) });
-  }
 });
 
 // POST publish a new shared note (persisted on server so all users can view it)
@@ -968,13 +916,6 @@ app.post("/api/notes", (req: Request, res: Response) => {
       upvoted_by: noteData.user_id ? [noteData.user_id] : [],
       created_at: noteData.created_at || new Date().toISOString(),
     };
-
-    // Clean newly created note ID from deleted registry if present
-    const reg = getDeletedRegistry();
-    if (reg.deleted_ids.includes(newNote.id)) {
-      reg.deleted_ids = reg.deleted_ids.filter((id) => id !== newNote.id);
-      saveDeletedRegistry(reg);
-    }
 
     // Prepend new note so it appears at top of library
     const updated = [newNote, ...notes.filter((n: any) => n.id !== newNote.id)];
@@ -1155,16 +1096,6 @@ app.delete("/api/notes/:id", async (req: Request, res: Response) => {
 
     if (target && Array.isArray(target.attachments)) {
       for (const att of target.attachments) {
-        if (!att) continue;
-        if (att.name) {
-          if (!registry.deleted_files.includes(att.name)) {
-            registry.deleted_files.push(att.name);
-          }
-          const supId = `sup_mat_${att.name.replace(/[^a-zA-Z0-9_-]/g, "_")}`;
-          if (!registry.deleted_ids.includes(supId)) {
-            registry.deleted_ids.push(supId);
-          }
-        }
         if (att.storageUrl && att.storageUrl.startsWith("/api/uploads/")) {
           try {
             const diskFilename = path.basename(att.storageUrl);

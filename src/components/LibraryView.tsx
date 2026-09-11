@@ -162,11 +162,9 @@ export const LibraryView: React.FC<LibraryViewProps> = ({
   // Keep active note modal updated if notes state changes
   useEffect(() => {
     if (activeNoteModal) {
-      const fresh = localNotes.find((n) => n.id === activeNoteModal.id || decodeURIComponent(n.id) === decodeURIComponent(activeNoteModal.id));
+      const fresh = localNotes.find((n) => n.id === activeNoteModal.id);
       if (fresh) {
         setActiveNoteModal(fresh);
-      } else {
-        setActiveNoteModal(null);
       }
     }
   }, [localNotes]);
@@ -543,9 +541,9 @@ export const LibraryView: React.FC<LibraryViewProps> = ({
     setIsDeleting(true);
     try {
       if (onDeleteNote) {
-        await onDeleteNote(noteToDelete as any);
+        await onDeleteNote(idToDelete);
       } else {
-        await StorageService.deleteSharedNote(noteToDelete);
+        await StorageService.deleteSharedNote(idToDelete);
       }
       StorageService.removeMyNoteId(idToDelete);
       setMyNoteIds(StorageService.getMyNoteIds());
