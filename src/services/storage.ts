@@ -475,6 +475,75 @@ export function extractUploadedFileMeta(rawFilename: string) {
   };
 }
 
+const BUCKET_NAME = 'Material Library';
+const MANIFEST_FILE_PATH = 'community_notes_manifest.json';
+
+export async function fetchBucketManifestNotes(): Promise<SharedNote[]> {
+  const supabase = getSupabaseClient();
+  const { url: supabaseUrl } = getSupabaseConfig();
+
+  if (supabaseUrl) {
+    try {
+      const publicUrl = `${supabaseUrl}/storage/v1/object/public/${encodeURIComponent(BUCKET_NAME)}/${MANIFEST_FILE_PATH}?t=${Date.now()}`;
+      const res = await fetch(publicUrl);
+      if (res.ok) {
+        const data = await res.json();
+        if (Array.isArray(data)) return data;
+      }
+    } catch {}
+  }
+
+  if (supabase) {
+    try {
+      const { data, error } = await supabase.storage.from(BUCKET_NAME).download(MANIFEST_FILE_PATH);
+      if (data && !error) {
+        const text = await data.text();
+        const parsed = JSON.parse(text);
+        if (Array.isArray(parsed)) return parsed;
+      }
+    } catch {}
+  }
+  return [];
+}
+
+export async function saveBucketManifestNotes(notes: SharedNote[]): Promise<void> {
+  const supabase = getSupabaseClient();
+  if (!supabase) return;
+
+  try {
+    const cleanNotes = notes.map((n) => ({
+      id: n.id,
+      user_id: n.user_id,
+      author_name: n.author_name,
+      title: n.title,
+      content: n.content,
+      subject: n.subject,
+      upvotes: typeof n.upvotes === 'number' ? n.upvotes : 1,
+      views: typeof n.views === 'number' ? n.views : 1,
+      flashcards: n.flashcards || [],
+      attachments: (n.attachments || []).map((a) => ({
+        id: a.id,
+        name: a.name,
+        size: a.size,
+        type: a.type,
+        dataUrl: a.storageUrl || a.dataUrl,
+        storageType: a.storageType,
+        storageUrl: a.storageUrl,
+        supabasePath: a.supabasePath,
+      })),
+      created_at: n.created_at || new Date().toISOString(),
+    }));
+
+    const blob = new Blob([JSON.stringify(cleanNotes, null, 2)], { type: 'application/json' });
+    await supabase.storage.from(BUCKET_NAME).upload(MANIFEST_FILE_PATH, blob, {
+      upsert: true,
+      cacheControl: '0',
+    });
+  } catch (err) {
+    console.warn('Notice: Bucket manifest save notice:', err);
+  }
+}
+
 /**
  * Synchronize community notes from central backend & Supabase Storage
  * so all notes, views, and likes are globally synchronized across all users,
@@ -489,7 +558,7 @@ export async function syncSharedNotesFromServer(currentUserId?: string): Promise
   const authoritativeDeletedIds = new Set<string>(PERMANENT_EXCLUDED_NOTE_IDS);
   const authoritativeDeletedFiles = new Set<string>();
 
-  // 0. FETCH GLOBALLY DELETED REGISTRY FROM SERVER (The ONLY authoritative deletion source)
+  // 0. FETCH GLOBALLY DELETED REGISTRY FROM SERVER
   try {
     const delRes = await fetch('/api/notes/deleted');
     if (delRes.ok) {
@@ -520,7 +589,6 @@ export async function syncSharedNotesFromServer(currentUserId?: string): Promise
       if (Array.isArray(serverNotes)) {
         for (const sn of serverNotes) {
           if (isExcludedNote(sn) || authoritativeDeletedIds.has(sn.id)) continue;
-          // Unflag from local deleted cache if server proves it is active
           removeDeletedNoteId(sn.id);
 
           const userHasUpvoted = Array.isArray(sn.upvoted_by)
@@ -579,24 +647,52 @@ export async function syncSharedNotesFromServer(currentUserId?: string): Promise
     }
   }
 
-  // 3. SCAN SUPABASE STORAGE BUCKET FOR DIRECT RAW UPLOADS
+  // 3. FETCH BUCKET MANIFEST NOTES (Consensus storage for static hosts/Vercel)
+  try {
+    const manifestNotes = await fetchBucketManifestNotes();
+    if (Array.isArray(manifestNotes)) {
+      for (const mn of manifestNotes) {
+        if (isExcludedNote(mn) || authoritativeDeletedIds.has(mn.id)) continue;
+        removeDeletedNoteId(mn.id);
+
+        if (!serverNotesMap.has(mn.id)) {
+          const localMatch = currentLocalMap.get(mn.id);
+          serverNotesMap.set(mn.id, {
+            ...mn,
+            has_upvoted: upvotedIds.has(mn.id) || !!localMatch?.has_upvoted,
+            upvotes: Math.max(Number(mn.upvotes) || 1, Number(localMatch?.upvotes) || 1),
+            views: Math.max(Number(mn.views) || 1, Number(localMatch?.views) || 1),
+          });
+        }
+      }
+    }
+  } catch (e) {
+    console.warn('Notice: Bucket manifest sync notice:', e);
+  }
+
+  // Combine all known custom published notes for strict file reference deduplication
+  const allKnownCustomNotes = [
+    ...Array.from(serverNotesMap.values()),
+    ...Array.from(currentLocalMap.values()),
+  ];
+
+  // 4. SCAN SUPABASE STORAGE BUCKET FOR DIRECT UNLINKED RAW UPLOADS
   const bucketNotes: SharedNote[] = [];
   try {
     const { url: supabaseUrl } = getSupabaseConfig();
     if (supabase && supabaseUrl) {
-      const bucketName = 'Material Library';
       const foldersToCheck = ['Uploaded Material', ''];
       const allFiles: Array<{ name: string; folder: string; metadata?: any; created_at?: string; updated_at?: string }> = [];
 
       for (const fld of foldersToCheck) {
         try {
           const { data: folderFiles } = await supabase.storage
-            .from(bucketName)
+            .from(BUCKET_NAME)
             .list(fld, { limit: 200 });
 
           if (folderFiles && Array.isArray(folderFiles)) {
             for (const f of folderFiles) {
-              if (f.name && f.name !== '.emptyFolderPlaceholder' && f.id !== null) {
+              if (f.name && f.name !== '.emptyFolderPlaceholder' && f.name !== MANIFEST_FILE_PATH && f.id !== null) {
                 if (!authoritativeDeletedFiles.has(f.name) && !authoritativeDeletedIds.has(f.name)) {
                   if (!allFiles.some((x) => x.name === f.name && x.folder === fld)) {
                     allFiles.push({ ...f, folder: fld });
@@ -617,10 +713,10 @@ export async function syncSharedNotesFromServer(currentUserId?: string): Promise
 
         const { author, userId, cleanName, title } = extractUploadedFileMeta(f.name);
         const folderPrefix = f.folder ? `${f.folder}/` : '';
-        const filePubUrl = `${supabaseUrl}/storage/v1/object/public/${encodeURIComponent(bucketName)}/${encodeURIComponent(folderPrefix)}${encodeURIComponent(f.name)}`;
+        const filePubUrl = `${supabaseUrl}/storage/v1/object/public/${encodeURIComponent(BUCKET_NAME)}/${encodeURIComponent(folderPrefix)}${encodeURIComponent(f.name)}`;
 
-        // Check if server note already references this file
-        const existingInServer = Array.from(serverNotesMap.values()).find((n) =>
+        // Check if ANY custom note already references this file
+        const isReferencedByCustomNote = allKnownCustomNotes.some((n) =>
           n.id === safeId ||
           (n.attachments || []).some(
             (a) =>
@@ -628,14 +724,13 @@ export async function syncSharedNotesFromServer(currentUserId?: string): Promise
               (a.storageUrl && a.storageUrl.includes(f.name)) ||
               a.name === cleanName ||
               a.name === f.name
-          ) || (title && n.title.toLowerCase() === title.toLowerCase())
+          ) ||
+          (title && n.title.toLowerCase() === title.toLowerCase()) ||
+          (cleanName && n.title.toLowerCase() === cleanName.toLowerCase())
         );
 
-        if (existingInServer) {
-          if (existingInServer.author_name === 'Peer Contributor' || !existingInServer.author_name) {
-            existingInServer.author_name = author;
-          }
-        } else {
+        // ONLY create an unlinked bucket note if NO custom note claims this file
+        if (!isReferencedByCustomNote) {
           const isPdf = f.name.toLowerCase().endsWith('.pdf');
           const isImg = /\.(png|jpe?g|webp|gif|svg)$/i.test(f.name);
 
@@ -674,17 +769,17 @@ export async function syncSharedNotesFromServer(currentUserId?: string): Promise
     console.warn('Notice: Direct Supabase storage check:', err);
   }
 
-  // 4. UNIFIED MERGE: Combine server notes, bucket notes, and active local notes
+  // 5. UNIFIED MERGE: Combine server notes, bucket notes, and active local notes
   const mergedMap = new Map<string, SharedNote>();
 
-  // A. Add all verified server / database notes
+  // A. Add all verified server / database / manifest notes
   for (const [id, note] of serverNotesMap.entries()) {
     if (!isExcludedNote(note) && !authoritativeDeletedIds.has(id)) {
       mergedMap.set(id, note);
     }
   }
 
-  // B. Add bucket notes discovered
+  // B. Add bucket notes discovered (if not claimed by custom notes)
   for (const bNote of bucketNotes) {
     if (!mergedMap.has(bNote.id) && !authoritativeDeletedIds.has(bNote.id) && !isExcludedNote(bNote)) {
       mergedMap.set(bNote.id, bNote);
@@ -780,6 +875,9 @@ export async function publishSharedNote(note: Omit<SharedNote, 'id' | 'created_a
   const updatedList = [savedRecord, ...currentNotes.filter((n) => n.id !== savedRecord.id && n.id !== newNote.id)];
   saveSharedNotes(updatedList);
 
+  // 4. Update consensus bucket manifest for cross-account static hosting
+  await saveBucketManifestNotes(updatedList);
+
   if (typeof window !== 'undefined') {
     window.dispatchEvent(new CustomEvent('paideutic_notes_updated'));
   }
@@ -868,6 +966,9 @@ export async function updateSharedNote(
   const currentNotes = loadSharedNotes();
   const updatedList = currentNotes.map((n) => (n.id === noteId ? savedRecord : n));
   saveSharedNotes(updatedList);
+
+  // 4. Update consensus bucket manifest for cross-account static hosting
+  await saveBucketManifestNotes(updatedList);
 
   if (typeof window !== 'undefined') {
     window.dispatchEvent(new CustomEvent('paideutic_notes_updated'));
@@ -1073,6 +1174,9 @@ export async function deleteSharedNote(noteId: string): Promise<SharedNote[]> {
   // 4. Update local state
   const remaining = loadSharedNotes().filter((n) => n.id !== noteId && !isExcludedNote(n));
   saveSharedNotes(remaining);
+
+  // 5. Update consensus bucket manifest for cross-account static hosting
+  await saveBucketManifestNotes(remaining);
 
   if (typeof window !== 'undefined') {
     window.dispatchEvent(new CustomEvent('paideutic_notes_updated'));
