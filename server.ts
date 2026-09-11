@@ -849,9 +849,24 @@ app.get("/api/notes", async (_req: Request, res: Response) => {
   }
 
   // Double check deleted filter and pre-existing filter before returning
-  const filteredNotes = notes.filter(
-    (n: any) => !deleted.deleted_ids.includes(n.id) && !isPreExistingDemoNote(n)
-  );
+  const filteredNotes = notes.filter((n: any) => {
+    if (deleted.deleted_ids.includes(n.id) || isPreExistingDemoNote(n)) return false;
+    if (Array.isArray(n.attachments)) {
+      for (const att of n.attachments) {
+        if (!att) continue;
+        if (att.name && deleted.deleted_files.includes(att.name)) return false;
+        if (att.supabasePath) {
+          const fn = path.basename(att.supabasePath);
+          if (fn && deleted.deleted_files.includes(fn)) return false;
+        }
+        if (att.storageUrl) {
+          const fn = path.basename(att.storageUrl);
+          if (fn && deleted.deleted_files.includes(fn)) return false;
+        }
+      }
+    }
+    return true;
+  });
   res.json(filteredNotes);
 });
 
@@ -1096,6 +1111,16 @@ app.delete("/api/notes/:id", async (req: Request, res: Response) => {
 
     if (target && Array.isArray(target.attachments)) {
       for (const att of target.attachments) {
+        if (!att) continue;
+        if (att.name) {
+          if (!registry.deleted_files.includes(att.name)) {
+            registry.deleted_files.push(att.name);
+          }
+          const supId = `sup_mat_${att.name.replace(/[^a-zA-Z0-9_-]/g, "_")}`;
+          if (!registry.deleted_ids.includes(supId)) {
+            registry.deleted_ids.push(supId);
+          }
+        }
         if (att.storageUrl && att.storageUrl.startsWith("/api/uploads/")) {
           try {
             const diskFilename = path.basename(att.storageUrl);

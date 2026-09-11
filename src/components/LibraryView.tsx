@@ -162,9 +162,11 @@ export const LibraryView: React.FC<LibraryViewProps> = ({
   // Keep active note modal updated if notes state changes
   useEffect(() => {
     if (activeNoteModal) {
-      const fresh = localNotes.find((n) => n.id === activeNoteModal.id);
+      const fresh = localNotes.find((n) => n.id === activeNoteModal.id || decodeURIComponent(n.id) === decodeURIComponent(activeNoteModal.id));
       if (fresh) {
         setActiveNoteModal(fresh);
+      } else {
+        setActiveNoteModal(null);
       }
     }
   }, [localNotes]);
